@@ -1,0 +1,36 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Godot
+.import/
+export.cfg
+export_presets.cfg
+.mono/
+data_*/
+*.translation
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

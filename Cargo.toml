@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/protocol",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/godot-netlink"
+authors = ["GodotNetLink Contributors"]
+
+[workspace.dependencies]
+bytes = "1.5"
+thiserror = "1.0"
+bitflags = "2.4"
