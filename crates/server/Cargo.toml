@@ -1,0 +1,13 @@
+[package]
+name = "godot-netlink-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+godot-netlink-protocol = { path = "../protocol" }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }

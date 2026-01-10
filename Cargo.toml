@@ -2,7 +2,25 @@
 resolver = "2"
 members = [
     "crates/protocol",
+    "crates/server",
+    "crates/client",
 ]
+default-members = ["."]
+
+[package]
+name = "godot-netlink"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/godot-netlink"
+authors = ["GodotNetLink Contributors"]
+
+[dependencies]
+godot-netlink-protocol = { path = "crates/protocol" }
+godot-netlink-server = { path = "crates/server" }
+godot-netlink-client = { path = "crates/client" }
+tokio = { workspace = true }
+bytes = { workspace = true }
 
 [workspace.package]
 version = "0.1.0"
@@ -15,3 +33,4 @@ authors = ["GodotNetLink Contributors"]
 bytes = "1.5"
 thiserror = "1.0"
 bitflags = "2.4"
+tokio = { version = "1.42", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
