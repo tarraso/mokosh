@@ -35,6 +35,8 @@
 
 pub mod envelope;
 pub mod error;
+pub mod transport;
 
 pub use envelope::{Envelope, EnvelopeFlags, ENVELOPE_HEADER_SIZE};
 pub use error::{EnvelopeError, Result};
+pub use transport::Transport;

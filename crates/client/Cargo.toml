@@ -11,3 +11,6 @@ godot-netlink-protocol = { path = "../protocol" }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }

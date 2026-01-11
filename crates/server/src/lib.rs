@@ -18,6 +18,8 @@
 //! }
 //! ```
 
+pub mod transport;
+
 use godot_netlink_protocol::Envelope;
 use tokio::sync::mpsc;
 

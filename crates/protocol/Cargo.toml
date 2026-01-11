@@ -10,5 +10,7 @@ authors.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
 bitflags.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true }
 
 [dev-dependencies]

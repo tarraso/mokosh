@@ -215,26 +215,31 @@ impl Envelope {
     }
 
     /// Returns the total size of the envelope (header + payload)
+    #[inline]
     pub fn total_size(&self) -> usize {
         ENVELOPE_HEADER_SIZE + self.payload.len()
     }
 
     /// Checks if the envelope has the RELIABLE flag set
+    #[inline]
     pub fn is_reliable(&self) -> bool {
         self.flags.contains(EnvelopeFlags::RELIABLE)
     }
 
     /// Checks if the envelope has the ENCRYPTED flag set
+    #[inline]
     pub fn is_encrypted(&self) -> bool {
         self.flags.contains(EnvelopeFlags::ENCRYPTED)
     }
 
     /// Checks if the envelope has the COMPRESSED flag set
+    #[inline]
     pub fn is_compressed(&self) -> bool {
         self.flags.contains(EnvelopeFlags::COMPRESSED)
     }
 
     /// Checks if this envelope is an RPC request/response
+    #[inline]
     pub fn is_rpc(&self) -> bool {
         self.correlation_id != 0
     }

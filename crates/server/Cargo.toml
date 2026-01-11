@@ -8,6 +8,10 @@ authors.workspace = true
 
 [dependencies]
 godot-netlink-protocol = { path = "../protocol" }
+godot-netlink-client = { path = "../client" }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }

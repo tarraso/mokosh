@@ -21,6 +21,10 @@ godot-netlink-server = { path = "crates/server" }
 godot-netlink-client = { path = "crates/client" }
 tokio = { workspace = true }
 bytes = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
 
 [workspace.package]
 version = "0.1.0"
@@ -33,4 +37,7 @@ authors = ["GodotNetLink Contributors"]
 bytes = "1.5"
 thiserror = "1.0"
 bitflags = "2.4"
-tokio = { version = "1.42", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
+async-trait = "0.1"
+tokio = { version = "1.42", features = ["rt", "rt-multi-thread", "sync", "macros", "time", "net"] }
+tokio-tungstenite = "0.21"
+futures = "0.3"
