@@ -1,4 +1,4 @@
-use crate::error::{EnvelopeError, Result};
+use crate::error::{EnvelopeError, EnvelopeResult as Result};
 use bitflags::bitflags;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 

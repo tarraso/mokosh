@@ -5,6 +5,9 @@
 //! This crate provides:
 //! - `Envelope`: The wire format for all network messages
 //! - `EnvelopeFlags`: Message flags for reliability, encryption, and compression
+//! - `ConnectionState`: Protocol state machine
+//! - Control messages: HELLO, HELLO_OK, HELLO_ERROR
+//! - Version negotiation logic
 //! - Error types for envelope parsing and validation
 //!
 //! ## Example
@@ -35,8 +38,14 @@
 
 pub mod envelope;
 pub mod error;
+pub mod messages;
+pub mod state;
 pub mod transport;
+pub mod version;
 
 pub use envelope::{Envelope, EnvelopeFlags, ENVELOPE_HEADER_SIZE};
-pub use error::{EnvelopeError, Result};
+pub use error::{EnvelopeError, ProtocolError, Result};
+pub use messages::{ErrorReason, Hello, HelloError, HelloOk};
+pub use state::ConnectionState;
 pub use transport::Transport;
+pub use version::{negotiate_version, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION};

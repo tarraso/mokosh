@@ -8,6 +8,9 @@ This crate provides the foundational protocol layer for GodotNetLink, including:
 
 - **Envelope**: Wire format for all network messages with a fixed 34-byte header
 - **EnvelopeFlags**: Bitflags for message properties (RELIABLE, ENCRYPTED, COMPRESSED)
+- **Control Messages**: HELLO, HELLO_OK, HELLO_ERROR for connection handshake
+- **ConnectionState**: Protocol state machine (Closed → Connecting → HelloSent → Connected)
+- **Version Negotiation**: Protocol version compatibility checking
 - **Error types**: Comprehensive error handling for envelope parsing and validation
 
 ## Features
@@ -53,6 +56,8 @@ All multi-byte integers are encoded in big-endian format.
 
 ## Usage
 
+### Basic Envelope Usage
+
 ```rust
 use godot_netlink_protocol::{Envelope, EnvelopeFlags};
 use bytes::Bytes;
@@ -79,6 +84,42 @@ assert_eq!(received.payload, Bytes::from_static(b"Hello, Godot!"));
 // Check flags
 assert!(received.is_reliable());
 assert!(!received.is_encrypted());
+```
+
+### Version Negotiation
+
+```rust
+use godot_netlink_protocol::{
+    negotiate_version,
+    CURRENT_PROTOCOL_VERSION,
+    MIN_PROTOCOL_VERSION,
+};
+
+// Client supports v1.0-v1.5, Server supports v1.0-v2.0
+let negotiated = negotiate_version(
+    0x0105, // client version
+    0x0100, // client min
+    0x0200, // server version
+    0x0100, // server min
+).unwrap();
+
+assert_eq!(negotiated, 0x0105); // Use v1.5
+```
+
+### Control Messages
+
+```rust
+use godot_netlink_protocol::{Hello, messages::routes};
+
+// Client sends HELLO
+let hello = Hello {
+    protocol_version: 0x0100,
+    min_protocol_version: 0x0100,
+    codec_id: 1,
+    schema_hash: 0,
+};
+
+// Serialize and send in envelope with route_id = routes::HELLO
 ```
 
 ## Envelope Flags

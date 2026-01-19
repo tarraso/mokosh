@@ -40,14 +40,8 @@ impl MemoryTransport {
     /// # Arguments
     /// * `to_peer` - Channel to send envelopes to the other side
     /// * `from_peer` - Channel to receive envelopes from the other side
-    pub fn new(
-        to_peer: mpsc::Sender<Envelope>,
-        from_peer: mpsc::Receiver<Envelope>,
-    ) -> Self {
-        Self {
-            to_peer,
-            from_peer,
-        }
+    pub fn new(to_peer: mpsc::Sender<Envelope>, from_peer: mpsc::Receiver<Envelope>) -> Self {
+        Self { to_peer, from_peer }
     }
 
     /// Creates a pair of connected transports for client and server
@@ -151,13 +145,10 @@ mod tests {
 
         outgoing_tx.send(test_envelope.clone()).await.unwrap();
 
-        let received = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            to_peer_rx.recv(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received = tokio::time::timeout(tokio::time::Duration::from_secs(1), to_peer_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(received.route_id, test_envelope.route_id);
         assert_eq!(received.payload, test_envelope.payload);
@@ -165,7 +156,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_transport_receives_from_peer() {
-        let (_to_peer_tx, to_peer_rx) = mpsc::channel(10);
+        let (_to_peer_tx, _to_peer_rx) = mpsc::channel(10);
         let (from_peer_tx, from_peer_rx) = mpsc::channel(10);
 
         let (incoming_tx, mut incoming_rx) = mpsc::channel(10);
@@ -189,13 +180,11 @@ mod tests {
 
         from_peer_tx.send(test_envelope.clone()).await.unwrap();
 
-        let received = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            incoming_rx.recv(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received =
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), incoming_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received.route_id, test_envelope.route_id);
         assert_eq!(received.payload, test_envelope.payload);
@@ -229,11 +218,15 @@ mod tests {
         let (server_outgoing_tx, server_outgoing_rx) = mpsc::channel(10);
 
         tokio::spawn(async move {
-            let _ = client_transport.run(client_incoming_tx, client_outgoing_rx).await;
+            let _ = client_transport
+                .run(client_incoming_tx, client_outgoing_rx)
+                .await;
         });
 
         tokio::spawn(async move {
-            let _ = server_transport.run(server_incoming_tx, server_outgoing_rx).await;
+            let _ = server_transport
+                .run(server_incoming_tx, server_outgoing_rx)
+                .await;
         });
 
         // Client sends to server
@@ -247,7 +240,10 @@ mod tests {
             Bytes::from_static(b"client->server"),
         );
 
-        client_outgoing_tx.send(test_envelope.clone()).await.unwrap();
+        client_outgoing_tx
+            .send(test_envelope.clone())
+            .await
+            .unwrap();
 
         let received = tokio::time::timeout(
             tokio::time::Duration::from_secs(1),
