@@ -4,22 +4,49 @@
 
 use bytes::Bytes;
 use godot_netlink_client::Client;
-use godot_netlink_protocol::{messages::routes, Envelope, EnvelopeFlags, CURRENT_PROTOCOL_VERSION};
+use godot_netlink_protocol::{messages::routes, Envelope, EnvelopeFlags, SessionEnvelope, SessionId, CURRENT_PROTOCOL_VERSION};
 use godot_netlink_server::Server;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
 #[tokio::test]
 async fn test_successful_hello_handshake() {
-    // Create channels for client ↔ server communication
-    let (client_to_server_tx, server_incoming_rx) = mpsc::channel(10);
-    let (server_to_client_tx, mut client_incoming_rx) = mpsc::channel(10);
+    // Create channels for server (uses SessionEnvelope)
+    let (server_incoming_tx, server_incoming_rx) = mpsc::channel(10);
+    let (server_outgoing_tx, mut server_outgoing_rx) = mpsc::channel::<SessionEnvelope>(10);
+
+    // Create channels for client (uses Envelope)
+    let (client_incoming_tx, mut client_incoming_rx) = mpsc::channel(10);
+    let (client_outgoing_tx, mut client_outgoing_rx) = mpsc::channel(10);
+
+    // Create adapter tasks
+    let session_id = SessionId::new_v4();
+
+    // Adapter: Client -> Server
+    let server_incoming_tx_clone = server_incoming_tx.clone();
+    tokio::spawn(async move {
+        while let Some(envelope) = client_outgoing_rx.recv().await {
+            let session_envelope = SessionEnvelope::new(session_id, envelope);
+            if server_incoming_tx_clone.send(session_envelope).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Adapter: Server -> Client
+    tokio::spawn(async move {
+        while let Some(session_envelope) = server_outgoing_rx.recv().await {
+            if client_incoming_tx.send(session_envelope.envelope).await.is_err() {
+                break;
+            }
+        }
+    });
 
     // Create server
-    let server = Server::new(server_incoming_rx, server_to_client_tx);
+    let server = Server::new(server_incoming_rx, server_outgoing_tx);
 
     // Create client
-    let mut client = Client::new(mpsc::channel(1).1, client_to_server_tx.clone());
+    let mut client = Client::new(mpsc::channel(1).1, client_outgoing_tx.clone());
 
     // Spawn server event loop
     tokio::spawn(async move {
@@ -41,12 +68,39 @@ async fn test_successful_hello_handshake() {
 
 #[tokio::test]
 async fn test_version_mismatch() {
-    // Create channels
-    let (client_to_server_tx, server_incoming_rx) = mpsc::channel(10);
-    let (server_to_client_tx, client_incoming_rx) = mpsc::channel(10);
+    // Create channels for server (uses SessionEnvelope)
+    let (server_incoming_tx, server_incoming_rx) = mpsc::channel(10);
+    let (server_outgoing_tx, mut server_outgoing_rx) = mpsc::channel::<SessionEnvelope>(10);
+
+    // Create channels for client (uses Envelope)
+    let (client_incoming_tx, client_incoming_rx) = mpsc::channel(10);
+    let (client_outgoing_tx, mut client_outgoing_rx) = mpsc::channel(10);
+
+    // Create adapter tasks
+    let session_id = SessionId::new_v4();
+
+    // Adapter: Client -> Server
+    let server_incoming_tx_clone = server_incoming_tx.clone();
+    tokio::spawn(async move {
+        while let Some(envelope) = client_outgoing_rx.recv().await {
+            let session_envelope = SessionEnvelope::new(session_id, envelope);
+            if server_incoming_tx_clone.send(session_envelope).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Adapter: Server -> Client
+    tokio::spawn(async move {
+        while let Some(session_envelope) = server_outgoing_rx.recv().await {
+            if client_incoming_tx.send(session_envelope.envelope).await.is_err() {
+                break;
+            }
+        }
+    });
 
     // Create server (current version 1.0)
-    let server = Server::new(server_incoming_rx, server_to_client_tx);
+    let server = Server::new(server_incoming_rx, server_outgoing_tx);
 
     // Spawn server
     tokio::spawn(async move {
@@ -73,7 +127,7 @@ async fn test_version_mismatch() {
         Bytes::from(payload),
     );
 
-    client_to_server_tx
+    client_outgoing_tx
         .send(hello_envelope)
         .await
         .expect("Failed to send HELLO");
@@ -101,12 +155,39 @@ async fn test_version_mismatch() {
 
 #[tokio::test]
 async fn test_game_message_rejected_before_hello() {
-    // Create channels
-    let (client_to_server_tx, server_incoming_rx) = mpsc::channel(10);
-    let (server_to_client_tx, mut client_incoming_rx) = mpsc::channel(10);
+    // Create channels for server (uses SessionEnvelope)
+    let (server_incoming_tx, server_incoming_rx) = mpsc::channel(10);
+    let (server_outgoing_tx, mut server_outgoing_rx) = mpsc::channel::<SessionEnvelope>(10);
+
+    // Create channels for client (uses Envelope)
+    let (client_incoming_tx, client_incoming_rx) = mpsc::channel(10);
+    let (client_outgoing_tx, mut client_outgoing_rx) = mpsc::channel(10);
+
+    // Create adapter tasks
+    let session_id = SessionId::new_v4();
+
+    // Adapter: Client -> Server
+    let server_incoming_tx_clone = server_incoming_tx.clone();
+    tokio::spawn(async move {
+        while let Some(envelope) = client_outgoing_rx.recv().await {
+            let session_envelope = SessionEnvelope::new(session_id, envelope);
+            if server_incoming_tx_clone.send(session_envelope).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Adapter: Server -> Client
+    tokio::spawn(async move {
+        while let Some(session_envelope) = server_outgoing_rx.recv().await {
+            if client_incoming_tx.send(session_envelope.envelope).await.is_err() {
+                break;
+            }
+        }
+    });
 
     // Create server
-    let server = Server::new(server_incoming_rx, server_to_client_tx);
+    let server = Server::new(server_incoming_rx, server_outgoing_tx);
 
     // Spawn server
     tokio::spawn(async move {
@@ -124,13 +205,14 @@ async fn test_game_message_rejected_before_hello() {
         Bytes::from_static(b"test payload"),
     );
 
-    client_to_server_tx
+    client_outgoing_tx
         .send(game_envelope)
         .await
         .expect("Failed to send game message");
 
     // Server should NOT echo it back (because client is not Connected)
-    let result = timeout(Duration::from_millis(200), client_incoming_rx.recv()).await;
+    let mut client_rx = client_incoming_rx;
+    let result = timeout(Duration::from_millis(200), client_rx.recv()).await;
 
     assert!(
         result.is_err(),
@@ -142,15 +224,43 @@ async fn test_game_message_rejected_before_hello() {
 
 #[tokio::test]
 async fn test_game_message_allowed_after_hello() {
-    // Create channels
-    let (client_to_server_tx, server_incoming_rx) = mpsc::channel(10);
-    let (server_to_client_tx, mut client_incoming_rx) = mpsc::channel(10);
+    // Create channels for server (uses SessionEnvelope)
+    let (server_incoming_tx, server_incoming_rx) = mpsc::channel(10);
+    let (server_outgoing_tx, mut server_outgoing_rx) = mpsc::channel::<SessionEnvelope>(10);
+
+    // Create channels for client (uses Envelope)
+    let (client_incoming_tx, mut client_incoming_rx) = mpsc::channel(10);
+    let (client_outgoing_tx, mut client_outgoing_rx) = mpsc::channel(10);
+
+    // Create adapter tasks
+    let session_id = SessionId::new_v4();
+
+    // Adapter: Client -> Server
+    let server_incoming_tx_clone = server_incoming_tx.clone();
+    let client_outgoing_tx_clone = client_outgoing_tx.clone();
+    tokio::spawn(async move {
+        while let Some(envelope) = client_outgoing_rx.recv().await {
+            let session_envelope = SessionEnvelope::new(session_id, envelope);
+            if server_incoming_tx_clone.send(session_envelope).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Adapter: Server -> Client
+    tokio::spawn(async move {
+        while let Some(session_envelope) = server_outgoing_rx.recv().await {
+            if client_incoming_tx.send(session_envelope.envelope).await.is_err() {
+                break;
+            }
+        }
+    });
 
     // Create server
-    let server = Server::new(server_incoming_rx, server_to_client_tx);
+    let server = Server::new(server_incoming_rx, server_outgoing_tx);
 
     // Create client
-    let mut client = Client::new(mpsc::channel(1).1, client_to_server_tx.clone());
+    let mut client = Client::new(mpsc::channel(1).1, client_outgoing_tx.clone());
 
     // Spawn server
     tokio::spawn(async move {
@@ -179,7 +289,7 @@ async fn test_game_message_allowed_after_hello() {
         Bytes::from_static(b"game data"),
     );
 
-    client_to_server_tx
+    client_outgoing_tx_clone
         .send(game_envelope.clone())
         .await
         .expect("Failed to send game message");

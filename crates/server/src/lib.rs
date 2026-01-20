@@ -23,8 +23,8 @@ pub mod transport;
 use bytes::Bytes;
 use godot_netlink_protocol::{
     messages::{routes, ErrorReason, Hello, HelloError, HelloOk, GAME_MESSAGES_START},
-    negotiate_version, ConnectionState, Envelope, EnvelopeFlags, CURRENT_PROTOCOL_VERSION,
-    MIN_PROTOCOL_VERSION,
+    negotiate_version, ConnectionState, Envelope, EnvelopeFlags, SessionEnvelope, SessionId,
+    CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
 use tokio::sync::mpsc;
 
@@ -34,29 +34,33 @@ use tokio::sync::mpsc;
 /// and sends responses through the outgoing channel.
 pub struct Server {
     /// Channel to receive envelopes from transport layer
-    incoming_rx: mpsc::Receiver<Envelope>,
+    incoming_rx: mpsc::Receiver<SessionEnvelope>,
 
     /// Channel to send envelopes to transport layer
-    outgoing_tx: mpsc::Sender<Envelope>,
+    outgoing_tx: mpsc::Sender<SessionEnvelope>,
 
     /// Current connection state
     state: ConnectionState,
 
     /// Message ID counter for outgoing messages
     next_msg_id: u64,
+
+    /// Current session ID (set during HELLO handshake)
+    current_session_id: Option<SessionId>,
 }
 
 impl Server {
     /// Creates a new server with the given channels
     pub fn new(
-        incoming_rx: mpsc::Receiver<Envelope>,
-        outgoing_tx: mpsc::Sender<Envelope>,
+        incoming_rx: mpsc::Receiver<SessionEnvelope>,
+        outgoing_tx: mpsc::Sender<SessionEnvelope>,
     ) -> Self {
         Self {
             incoming_rx,
             outgoing_tx,
             state: ConnectionState::Connecting,
             next_msg_id: 1,
+            current_session_id: None,
         }
     }
 
@@ -66,8 +70,8 @@ impl Server {
     pub async fn run(mut self) {
         loop {
             tokio::select! {
-                Some(envelope) = self.incoming_rx.recv() => {
-                    if let Err(e) = self.handle_envelope(envelope).await {
+                Some(session_envelope) = self.incoming_rx.recv() => {
+                    if let Err(e) = self.handle_session_envelope(session_envelope).await {
                         eprintln!("Error handling envelope: {}", e);
                     }
                 }
@@ -80,11 +84,19 @@ impl Server {
         }
     }
 
-    /// Handles a single envelope
-    async fn handle_envelope(&mut self, envelope: Envelope) -> Result<(), ServerError> {
+    /// Handles a single session envelope
+    async fn handle_session_envelope(&mut self, session_envelope: SessionEnvelope) -> Result<(), ServerError> {
+        let session_id = session_envelope.session_id;
+        let envelope = session_envelope.envelope;
+
+        // Store the session ID if not already set
+        if self.current_session_id.is_none() {
+            self.current_session_id = Some(session_id);
+        }
+
         println!(
-            "Server received: route_id={}, msg_id={}, payload_len={}, state={:?}",
-            envelope.route_id, envelope.msg_id, envelope.payload_len, self.state
+            "Server received: session={}, route_id={}, msg_id={}, payload_len={}, state={:?}",
+            session_id, envelope.route_id, envelope.msg_id, envelope.payload_len, self.state
         );
 
         // Dispatch based on route_id: control messages (<100) vs game messages (>=100)
@@ -117,10 +129,16 @@ impl Server {
             return Ok(());
         }
 
-        // For now, echo back (same as before)
+        // For now, echo back to the same session
         println!("Server: echoing game message route_id={}", envelope.route_id);
+
+        // Get the current session ID
+        let session_id = self.current_session_id
+            .ok_or_else(|| ServerError::InvalidMessage("No session ID set".to_string()))?;
+
+        let session_envelope = SessionEnvelope::new(session_id, envelope);
         self.outgoing_tx
-            .send(envelope)
+            .send(session_envelope)
             .await
             .map_err(|_| ServerError::ChannelSendError)?;
 
@@ -148,10 +166,14 @@ impl Server {
             Ok(negotiated_version) => {
                 println!("Server: Version negotiated: {:#06x}", negotiated_version);
 
-                // Send HELLO_OK
+                // Get the session ID (should be set by now)
+                let session_id = self.current_session_id
+                    .ok_or_else(|| ServerError::InvalidMessage("No session ID set".to_string()))?;
+
+                // Send HELLO_OK with the session ID
                 let hello_ok = HelloOk {
                     server_version: negotiated_version,
-                    session_id: String::new(), // Empty until auth
+                    session_id: session_id.to_string(),
                     auth_required: false,       // No auth for MVP
                     available_auth_methods: vec![],
                 };
@@ -161,7 +183,7 @@ impl Server {
 
                 // Transition to Connected state
                 self.state = ConnectionState::Connected;
-                println!("Server: Connection established");
+                println!("Server: Connection established (session={})", session_id);
             }
             Err(err) => {
                 println!("Server: Version mismatch: {}", err);
@@ -203,8 +225,13 @@ impl Server {
 
         self.next_msg_id += 1;
 
+        // Get the current session ID
+        let session_id = self.current_session_id
+            .ok_or_else(|| ServerError::InvalidMessage("No session ID set".to_string()))?;
+
+        let session_envelope = SessionEnvelope::new(session_id, envelope);
         self.outgoing_tx
-            .send(envelope)
+            .send(session_envelope)
             .await
             .map_err(|_| ServerError::ChannelSendError)?;
 
@@ -238,6 +265,7 @@ mod tests {
             server.run().await;
         });
 
+        let session_id = SessionId::new_v4();
         let test_envelope = Envelope::new_simple(
             1,
             1,
@@ -248,9 +276,13 @@ mod tests {
             Bytes::from_static(b"test"),
         );
 
-        incoming_tx.send(test_envelope.clone()).await.unwrap();
+        let session_envelope = SessionEnvelope::new(session_id, test_envelope.clone());
+        incoming_tx.send(session_envelope).await.unwrap();
 
-        let received = outgoing_rx.recv().await.unwrap();
+        let received_session_envelope = outgoing_rx.recv().await.unwrap();
+        assert_eq!(received_session_envelope.session_id, session_id);
+
+        let received = received_session_envelope.envelope;
         assert_eq!(received.route_id, test_envelope.route_id);
         assert_eq!(received.msg_id, test_envelope.msg_id);
         assert_eq!(received.payload, test_envelope.payload);

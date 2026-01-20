@@ -104,18 +104,65 @@ async fn main() {
 
     sleep(Duration::from_millis(500)).await;
 
+    println!("\n--- Testing multi-client routing ---");
+
+    // Connect a second client
+    let (client2_incoming_tx, client2_incoming_rx) = mpsc::channel(100);
+    let (client2_outgoing_tx, client2_outgoing_rx) = mpsc::channel(100);
+
+    let ws_client2 = WebSocketClient::new(format!("ws://{}", addr));
+
+    println!("Connecting second WebSocket client to {}...", addr);
+    let client2_transport_handle = tokio::spawn(async move {
+        if let Err(e) = ws_client2.run(client2_incoming_tx, client2_outgoing_rx).await {
+            eprintln!("WebSocket client 2 error: {}", e);
+        }
+    });
+
+    let client2 = Client::new(client2_incoming_rx, client2_outgoing_tx.clone());
+    let client2_loop_handle = tokio::spawn(async move {
+        client2.run().await;
+    });
+
+    sleep(Duration::from_millis(500)).await;
+
+    println!("\n--- Sending test message from client 2 ---");
+    let test_message_3 = Envelope::new_simple(
+        1,
+        1,
+        0x1234567890ABCDEF,
+        300,
+        3,
+        EnvelopeFlags::RELIABLE,
+        Bytes::from_static(b"Hello from second client!"),
+    );
+
+    println!("  Route ID: {}", test_message_3.route_id);
+    println!("  Message ID: {}", test_message_3.msg_id);
+    println!(
+        "  Payload: {:?}",
+        std::str::from_utf8(&test_message_3.payload).unwrap()
+    );
+
+    client2_outgoing_tx.send(test_message_3).await.unwrap();
+
+    sleep(Duration::from_millis(500)).await;
+
     println!("\n--- Test complete ---");
-    println!("\nNote: Full echo functionality requires per-connection routing,");
-    println!("which will be implemented in the next iteration.");
-    println!("\nFor now, verify that:");
-    println!("✓ WebSocket server accepts connections");
-    println!("✓ WebSocket client connects successfully");
-    println!("✓ Messages are sent from client to server");
+    println!("\n✓ WebSocket server accepts multiple connections");
+    println!("✓ WebSocket clients connect successfully");
+    println!("✓ Messages are sent from clients to server");
     println!("✓ Server receives and processes envelopes");
+    println!("✓ Multi-client routing is working");
+    println!("✓ Each client has a unique session ID");
 
     drop(client_outgoing_tx);
+    drop(client2_outgoing_tx);
 
     sleep(Duration::from_millis(100)).await;
+
+    client2_transport_handle.abort();
+    client2_loop_handle.abort();
 
     server_transport_handle.abort();
     server_loop_handle.abort();

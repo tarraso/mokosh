@@ -7,7 +7,7 @@
 
 use bytes::Bytes;
 use godot_netlink_client::Client;
-use godot_netlink_protocol::{Envelope, EnvelopeFlags};
+use godot_netlink_protocol::{Envelope, EnvelopeFlags, SessionEnvelope, SessionId};
 use godot_netlink_server::Server;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
@@ -16,20 +16,44 @@ use tokio::time::{sleep, Duration};
 async fn main() {
     println!("=== GodotNetLink Event Loop Test ===\n");
 
-    // Create channels for communication
-    // Client sends to server
-    let (client_to_server_tx, client_to_server_rx) = mpsc::channel(100);
-    // Server sends to client
-    let (server_to_client_tx, server_to_client_rx) = mpsc::channel(100);
+    // Create channels for server (uses SessionEnvelope)
+    let (server_incoming_tx, server_incoming_rx) = mpsc::channel(100);
+    let (server_outgoing_tx, mut server_outgoing_rx) = mpsc::channel::<SessionEnvelope>(100);
+
+    // Create channels for client (uses Envelope)
+    let (client_incoming_tx, client_incoming_rx) = mpsc::channel(100);
+    let (client_outgoing_tx, mut client_outgoing_rx) = mpsc::channel(100);
 
     // Clone sender for later use
-    let client_to_server_tx_clone = client_to_server_tx.clone();
+    let client_outgoing_tx_clone = client_outgoing_tx.clone();
+
+    // Create adapter tasks to convert between Envelope and SessionEnvelope
+    let session_id = SessionId::new_v4();
+
+    // Adapter: Client -> Server (Envelope to SessionEnvelope)
+    tokio::spawn(async move {
+        while let Some(envelope) = client_outgoing_rx.recv().await {
+            let session_envelope = SessionEnvelope::new(session_id, envelope);
+            if server_incoming_tx.send(session_envelope).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Adapter: Server -> Client (SessionEnvelope to Envelope)
+    tokio::spawn(async move {
+        while let Some(session_envelope) = server_outgoing_rx.recv().await {
+            if client_incoming_tx.send(session_envelope.envelope).await.is_err() {
+                break;
+            }
+        }
+    });
 
     // Create server
-    let server = Server::new(client_to_server_rx, server_to_client_tx);
+    let server = Server::new(server_incoming_rx, server_outgoing_tx);
 
     // Create client
-    let client = Client::new(server_to_client_rx, client_to_server_tx);
+    let client = Client::new(client_incoming_rx, client_outgoing_tx);
 
     // Spawn server task
     println!("Starting server...");
@@ -64,7 +88,7 @@ async fn main() {
     println!("  Flags: {:?}", test_message.flags);
 
     // Send message from client to server
-    client_to_server_tx_clone.send(test_message.clone()).await.unwrap();
+    client_outgoing_tx_clone.send(test_message.clone()).await.unwrap();
 
     // Wait for message to be processed
     sleep(Duration::from_millis(200)).await;
@@ -90,7 +114,7 @@ async fn main() {
     println!("  Payload: {:?}", std::str::from_utf8(&test_message_2.payload).unwrap());
     println!("  Flags: {:?}", test_message_2.flags);
 
-    client_to_server_tx_clone.send(test_message_2).await.unwrap();
+    client_outgoing_tx_clone.send(test_message_2).await.unwrap();
 
     // Wait for processing
     sleep(Duration::from_millis(200)).await;
@@ -98,7 +122,7 @@ async fn main() {
     println!("\n--- Shutting down ---");
 
     // Close channels to signal shutdown
-    drop(client_to_server_tx_clone);
+    drop(client_outgoing_tx_clone);
 
     // Wait for both to finish
     server_handle.await.unwrap();

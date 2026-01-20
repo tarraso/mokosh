@@ -49,3 +49,51 @@ pub use messages::{ErrorReason, Hello, HelloError, HelloOk};
 pub use state::ConnectionState;
 pub use transport::Transport;
 pub use version::{negotiate_version, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION};
+
+/// Session identifier for routing envelopes to specific clients
+///
+/// This is used internally by the server to track and route messages to
+/// individual client connections. The SessionId is NOT part of the wire
+/// protocol - it's only used for internal message routing.
+pub type SessionId = uuid::Uuid;
+
+/// Envelope tagged with a session ID for internal routing
+///
+/// This type is used internally by the server transport and event loop
+/// to route messages to specific clients. The SessionId is not transmitted
+/// over the network - only the Envelope is sent on the wire.
+///
+/// # Example
+///
+/// ```
+/// use godot_netlink_protocol::{SessionEnvelope, Envelope, EnvelopeFlags};
+/// use bytes::Bytes;
+/// use uuid::Uuid;
+///
+/// let session_id = Uuid::new_v4();
+/// let envelope = Envelope::new_simple(
+///     1, 1, 0, 100, 1,
+///     EnvelopeFlags::RELIABLE,
+///     Bytes::from_static(b"test"),
+/// );
+///
+/// let session_envelope = SessionEnvelope::new(session_id, envelope);
+/// ```
+#[derive(Debug, Clone)]
+pub struct SessionEnvelope {
+    /// Session identifier for routing
+    pub session_id: SessionId,
+
+    /// The actual envelope to send/receive
+    pub envelope: Envelope,
+}
+
+impl SessionEnvelope {
+    /// Creates a new SessionEnvelope
+    pub fn new(session_id: SessionId, envelope: Envelope) -> Self {
+        Self {
+            session_id,
+            envelope,
+        }
+    }
+}

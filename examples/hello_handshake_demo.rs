@@ -6,7 +6,7 @@
 
 use bytes::Bytes;
 use godot_netlink_client::Client;
-use godot_netlink_protocol::{Envelope, EnvelopeFlags, CURRENT_PROTOCOL_VERSION};
+use godot_netlink_protocol::{Envelope, EnvelopeFlags, SessionEnvelope, SessionId, CURRENT_PROTOCOL_VERSION};
 use godot_netlink_server::Server;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
@@ -15,16 +15,43 @@ use tokio::time::{sleep, Duration};
 async fn main() {
     println!("=== HELLO Handshake Demo ===\n");
 
-    // Create communication channels
-    let (client_to_server_tx, server_incoming_rx) = mpsc::channel(100);
-    let (server_to_client_tx, mut client_incoming_rx) = mpsc::channel(100);
+    // Create channels for server (uses SessionEnvelope)
+    let (server_incoming_tx, server_incoming_rx) = mpsc::channel(100);
+    let (server_outgoing_tx, mut server_outgoing_rx) = mpsc::channel::<SessionEnvelope>(100);
+
+    // Create channels for client (uses Envelope)
+    let (client_incoming_tx, mut client_incoming_rx) = mpsc::channel(100);
+    let (client_outgoing_tx, mut client_outgoing_rx) = mpsc::channel(100);
+
+    // Create adapter tasks
+    let session_id = SessionId::new_v4();
+
+    // Adapter: Client -> Server
+    let server_incoming_tx_clone = server_incoming_tx.clone();
+    tokio::spawn(async move {
+        while let Some(envelope) = client_outgoing_rx.recv().await {
+            let session_envelope = SessionEnvelope::new(session_id, envelope);
+            if server_incoming_tx_clone.send(session_envelope).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Adapter: Server -> Client
+    tokio::spawn(async move {
+        while let Some(session_envelope) = server_outgoing_rx.recv().await {
+            if client_incoming_tx.send(session_envelope.envelope).await.is_err() {
+                break;
+            }
+        }
+    });
 
     // Create server
-    let server = Server::new(server_incoming_rx, server_to_client_tx);
+    let server = Server::new(server_incoming_rx, server_outgoing_tx);
     println!("Server created (version {:#06x})", CURRENT_PROTOCOL_VERSION);
 
     // Create client
-    let mut client = Client::new(mpsc::channel(1).1, client_to_server_tx.clone());
+    let mut client = Client::new(mpsc::channel(1).1, client_outgoing_tx.clone());
     println!("Client created (version {:#06x})\n", CURRENT_PROTOCOL_VERSION);
 
     // Spawn server event loop
@@ -63,7 +90,7 @@ async fn main() {
                     Bytes::from_static(b"Hello from game!"),
                 );
 
-                client_to_server_tx
+                client_outgoing_tx
                     .send(game_envelope)
                     .await
                     .expect("Failed to send game message");

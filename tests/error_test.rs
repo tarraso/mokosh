@@ -74,7 +74,7 @@ async fn test_server_handles_malformed_websocket_data() {
         .unwrap();
 
     assert!(received.is_some());
-    assert_eq!(received.unwrap().route_id, 100);
+    assert_eq!(received.unwrap().envelope.route_id, 100);
 
     server_handle.abort();
 }
@@ -140,7 +140,8 @@ async fn test_empty_payload() {
         .unwrap();
 
     assert!(received.is_some());
-    let envelope = received.unwrap();
+    let session_envelope = received.unwrap();
+    let envelope = session_envelope.envelope;
     assert_eq!(envelope.payload_len, 0);
     assert_eq!(envelope.payload.len(), 0);
 
@@ -251,7 +252,7 @@ async fn test_invalid_envelope_header() {
     assert!(result.is_ok());
     let received = result.unwrap();
     assert!(received.is_some());
-    assert_eq!(received.unwrap().route_id, 100);
+    assert_eq!(received.unwrap().envelope.route_id, 100);
 
     server_handle.abort();
 }
@@ -310,7 +311,7 @@ async fn test_websocket_text_message_ignored() {
     assert!(result.is_ok());
     let received = result.unwrap();
     assert!(received.is_some());
-    assert_eq!(received.unwrap().route_id, 100);
+    assert_eq!(received.unwrap().envelope.route_id, 100);
 
     server_handle.abort();
 }

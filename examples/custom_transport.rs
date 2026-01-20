@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use godot_netlink_client::{transport::Transport as ClientTransport, Client};
-use godot_netlink_protocol::{Envelope, EnvelopeFlags};
+use godot_netlink_protocol::{Envelope, EnvelopeFlags, SessionEnvelope, SessionId};
 use godot_netlink_server::{transport::Transport as ServerTransport, Server};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
@@ -120,9 +120,9 @@ async fn main() {
     let (client_to_server_tx, client_to_server_rx) = mpsc::channel(100);
     let (server_to_client_tx, server_to_client_rx) = mpsc::channel(100);
 
-    // Server setup
+    // Server setup (uses SessionEnvelope)
     let (server_incoming_tx, server_incoming_rx) = mpsc::channel(100);
-    let (server_outgoing_tx, server_outgoing_rx) = mpsc::channel(100);
+    let (server_outgoing_tx, mut server_outgoing_rx) = mpsc::channel(100);
 
     let server = Server::new(server_incoming_rx, server_outgoing_tx.clone());
     let server_transport = MemoryServerTransport::new(server_to_client_tx, client_to_server_rx);
@@ -132,9 +132,34 @@ async fn main() {
         server.run().await;
     });
 
+    // Create adapter for server transport
+    let session_id = SessionId::new_v4();
     tokio::spawn(async move {
+        let (transport_incoming_tx, mut transport_incoming_rx) = mpsc::channel(100);
+        let (transport_outgoing_tx, transport_outgoing_rx) = mpsc::channel(100);
+
+        // Task to convert incoming Envelope to SessionEnvelope
+        let server_incoming_tx_clone = server_incoming_tx.clone();
+        tokio::spawn(async move {
+            while let Some(envelope) = transport_incoming_rx.recv().await {
+                let session_envelope = SessionEnvelope::new(session_id, envelope);
+                if server_incoming_tx_clone.send(session_envelope).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Task to convert outgoing SessionEnvelope to Envelope
+        tokio::spawn(async move {
+            while let Some(session_envelope) = server_outgoing_rx.recv().await {
+                if transport_outgoing_tx.send(session_envelope.envelope).await.is_err() {
+                    break;
+                }
+            }
+        });
+
         println!("[Server] Starting memory transport");
-        if let Err(e) = server_transport.run(server_incoming_tx, server_outgoing_rx).await {
+        if let Err(e) = server_transport.run(transport_incoming_tx, transport_outgoing_rx).await {
             eprintln!("[Server] Transport error: {}", e);
         }
     });
