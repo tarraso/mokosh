@@ -2,10 +2,11 @@
 //!
 //! State transitions:
 //! ```text
-//! CLOSED → CONNECTING → HELLO_SENT → CONNECTED
-//!   ↑          ↓            ↓             ↓
-//!   └──────────┴────────────┴─────────────┘
-//!              (any error/disconnect)
+//! Client: CLOSED → CONNECTING → HELLO_SENT → CONNECTED
+//! Server: CLOSED → CONNECTING ───────────────→ CONNECTED
+//!           ↑          ↓            ↓             ↓
+//!           └──────────┴────────────┴─────────────┘
+//!                      (any error/disconnect)
 //! ```
 
 use crate::error::{ProtocolError, Result};
@@ -36,8 +37,9 @@ impl ConnectionState {
             (Closed, Connecting) => true,
 
             // From Connecting
-            (Connecting, HelloSent) => true,
-            (Connecting, Closed) => true, // connection failed
+            (Connecting, HelloSent) => true, // Client sends HELLO
+            (Connecting, Connected) => true, // Server validates HELLO and accepts
+            (Connecting, Closed) => true,    // connection failed
 
             // From HelloSent
             (HelloSent, Connected) => true, // HELLO_OK received
@@ -177,5 +179,22 @@ mod tests {
         assert_eq!(ConnectionState::Connecting.to_string(), "Connecting");
         assert_eq!(ConnectionState::HelloSent.to_string(), "HelloSent");
         assert_eq!(ConnectionState::Connected.to_string(), "Connected");
+    }
+
+    #[test]
+    fn test_server_path_transition() {
+        let mut state = ConnectionState::Closed;
+
+        // Server path: Closed → Connecting
+        assert!(state.transition_to(ConnectionState::Connecting).is_ok());
+        assert_eq!(state, ConnectionState::Connecting);
+
+        // Server path: Connecting → Connected (direct, no HelloSent)
+        assert!(state.transition_to(ConnectionState::Connected).is_ok());
+        assert_eq!(state, ConnectionState::Connected);
+
+        // Disconnect
+        assert!(state.transition_to(ConnectionState::Closed).is_ok());
+        assert_eq!(state, ConnectionState::Closed);
     }
 }

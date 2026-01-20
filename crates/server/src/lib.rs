@@ -182,7 +182,8 @@ impl Server {
                     .await?;
 
                 // Transition to Connected state
-                self.state = ConnectionState::Connected;
+                self.state.transition_to(ConnectionState::Connected)
+                    .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
                 println!("Server: Connection established (session={})", session_id);
             }
             Err(err) => {
@@ -247,6 +248,9 @@ pub enum ServerError {
 
     #[error("Invalid message: {0}")]
     InvalidMessage(String),
+
+    #[error("Invalid state transition: {0}")]
+    InvalidStateTransition(String),
 }
 
 #[cfg(test)]

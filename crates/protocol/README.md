@@ -9,7 +9,9 @@ This crate provides the foundational protocol layer for GodotNetLink, including:
 - **Envelope**: Wire format for all network messages with a fixed 34-byte header
 - **EnvelopeFlags**: Bitflags for message properties (RELIABLE, ENCRYPTED, COMPRESSED)
 - **Control Messages**: HELLO, HELLO_OK, HELLO_ERROR for connection handshake
-- **ConnectionState**: Protocol state machine (Closed → Connecting → HelloSent → Connected)
+- **ConnectionState**: Protocol state machine with validated transitions
+  - Client: Closed → Connecting → HelloSent → Connected
+  - Server: Closed → Connecting → Connected
 - **Version Negotiation**: Protocol version compatibility checking
 - **Error types**: Comprehensive error handling for envelope parsing and validation
 

@@ -63,6 +63,10 @@ impl Client {
     pub async fn connect(&mut self) -> Result<(), ClientError> {
         println!("Client: Sending HELLO...");
 
+        // Transition from Closed to Connecting
+        self.state.transition_to(ConnectionState::Connecting)
+            .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
+
         let hello = Hello {
             protocol_version: CURRENT_PROTOCOL_VERSION,
             min_protocol_version: MIN_PROTOCOL_VERSION,
@@ -72,8 +76,9 @@ impl Client {
 
         self.send_control_message(routes::HELLO, &hello).await?;
 
-        // Transition to HelloSent state
-        self.state = ConnectionState::HelloSent;
+        // Transition from Connecting to HelloSent
+        self.state.transition_to(ConnectionState::HelloSent)
+            .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
 
         Ok(())
     }
@@ -142,7 +147,8 @@ impl Client {
         );
 
         // Transition to Connected state
-        self.state = ConnectionState::Connected;
+        self.state.transition_to(ConnectionState::Connected)
+            .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
         println!("Client: Connection established");
 
         Ok(())
@@ -208,6 +214,9 @@ pub enum ClientError {
 
     #[error("Invalid message: {0}")]
     InvalidMessage(String),
+
+    #[error("Invalid state transition: {0}")]
+    InvalidStateTransition(String),
 }
 
 #[cfg(test)]
