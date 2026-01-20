@@ -111,12 +111,12 @@ impl Server {
             tokio::select! {
                 Some(session_envelope) = self.incoming_rx.recv() => {
                     if let Err(e) = self.handle_session_envelope(session_envelope).await {
-                        eprintln!("Error handling envelope: {}", e);
+                        tracing::error!(error = %e, "Error handling envelope");
                     }
                 }
 
                 else => {
-                    println!("Server shutting down: incoming channel closed");
+                    tracing::info!("Server shutting down: incoming channel closed");
                     break;
                 }
             }
@@ -133,9 +133,13 @@ impl Server {
             self.current_session_id = Some(session_id);
         }
 
-        println!(
-            "Server received: session={}, route_id={}, msg_id={}, payload_len={}, state={:?}",
-            session_id, envelope.route_id, envelope.msg_id, envelope.payload_len, self.state
+        tracing::debug!(
+            session = %session_id,
+            route_id = envelope.route_id,
+            msg_id = envelope.msg_id,
+            payload_len = envelope.payload_len,
+            state = ?self.state,
+            "Server received envelope"
         );
 
         // Dispatch based on route_id: control messages (<100) vs game messages (>=100)
@@ -151,7 +155,7 @@ impl Server {
         match envelope.route_id {
             routes::HELLO => self.handle_hello(envelope).await,
             _ => {
-                println!("Server: unknown control message route_id={}", envelope.route_id);
+                tracing::warn!(route_id = envelope.route_id, "Unknown control message");
                 Ok(())
             }
         }
@@ -161,15 +165,16 @@ impl Server {
     async fn handle_game_message(&mut self, envelope: Envelope) -> Result<(), ServerError> {
         // Game messages are only allowed in Connected state
         if !self.state.is_connected() {
-            println!(
-                "Server: rejecting game message (route_id={}) in state {:?}",
-                envelope.route_id, self.state
+            tracing::debug!(
+                route_id = envelope.route_id,
+                state = ?self.state,
+                "Rejecting game message in invalid state"
             );
             return Ok(());
         }
 
         // For now, echo back to the same session
-        println!("Server: echoing game message route_id={}", envelope.route_id);
+        tracing::debug!(route_id = envelope.route_id, "Echoing game message");
 
         // Get the current session ID
         let session_id = self.current_session_id
@@ -193,9 +198,11 @@ impl Server {
         let hello: Hello = codec.decode(&envelope.payload)
             .map_err(|e| ServerError::InvalidMessage(format!("Failed to parse HELLO: {}", e)))?;
 
-        println!(
-            "Server: HELLO from client (version={:#06x}, min={:#06x}, codec={})",
-            hello.protocol_version, hello.min_protocol_version, hello.codec_id
+        tracing::info!(
+            version = format!("{:#06x}", hello.protocol_version),
+            min_version = format!("{:#06x}", hello.min_protocol_version),
+            codec_id = hello.codec_id,
+            "HELLO received from client"
         );
 
         // Store the client's requested codec for game messages
@@ -209,7 +216,10 @@ impl Server {
             MIN_PROTOCOL_VERSION,
         ) {
             Ok(negotiated_version) => {
-                println!("Server: Version negotiated: {:#06x}", negotiated_version);
+                tracing::info!(
+                    version = format!("{:#06x}", negotiated_version),
+                    "Version negotiated"
+                );
 
                 // Get the session ID (should be set by now)
                 let session_id = self.current_session_id
@@ -229,10 +239,10 @@ impl Server {
                 // Transition to Connected state
                 self.state.transition_to(ConnectionState::Connected)
                     .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
-                println!("Server: Connection established (session={})", session_id);
+                tracing::info!(session = %session_id, "Connection established");
             }
             Err(err) => {
-                println!("Server: Version mismatch: {}", err);
+                tracing::error!(error = %err, "Version mismatch");
 
                 // Send HELLO_ERROR
                 let hello_error = HelloError {

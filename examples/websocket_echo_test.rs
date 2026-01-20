@@ -4,6 +4,9 @@
 //! that communicate over a real network connection.
 //!
 //! Run with: cargo run --example websocket_echo_test
+//!
+//! To see detailed logs, run with:
+//! RUST_LOG=debug cargo run --example websocket_echo_test
 
 use bytes::Bytes;
 use godot_netlink_client::{transport::websocket::WebSocketClient, Client};
@@ -15,6 +18,16 @@ use tokio::time::{sleep, Duration};
 
 #[tokio::main]
 async fn main() {
+    // Initialize tracing subscriber for structured logging
+    // Set RUST_LOG environment variable to control log level
+    // Example: RUST_LOG=debug cargo run --example websocket_echo_test
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+        )
+        .init();
+
     println!("=== GodotNetLink WebSocket Echo Test ===\n");
 
     let addr: SocketAddr = "127.0.0.1:9090".parse().unwrap();
@@ -27,7 +40,7 @@ async fn main() {
     println!("Starting WebSocket server on {}...", addr);
     let server_transport_handle = tokio::spawn(async move {
         if let Err(e) = ws_server.run(server_incoming_tx, server_outgoing_rx).await {
-            eprintln!("WebSocket server error: {}", e);
+            tracing::error!(error = %e, "WebSocket server error");
         }
     });
 
@@ -46,7 +59,7 @@ async fn main() {
     println!("Connecting WebSocket client to {}...", addr);
     let client_transport_handle = tokio::spawn(async move {
         if let Err(e) = ws_client.run(client_incoming_tx, client_outgoing_rx).await {
-            eprintln!("WebSocket client error: {}", e);
+            tracing::error!(error = %e, "WebSocket client error");
         }
     });
 
@@ -115,7 +128,7 @@ async fn main() {
     println!("Connecting second WebSocket client to {}...", addr);
     let client2_transport_handle = tokio::spawn(async move {
         if let Err(e) = ws_client2.run(client2_incoming_tx, client2_outgoing_rx).await {
-            eprintln!("WebSocket client 2 error: {}", e);
+            tracing::error!(error = %e, "WebSocket client 2 error");
         }
     });
 

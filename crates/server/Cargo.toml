@@ -18,3 +18,4 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+tracing = { workspace = true }

@@ -100,7 +100,7 @@ impl Client {
 
     /// Initiates connection by sending HELLO message
     pub async fn connect(&mut self) -> Result<(), ClientError> {
-        println!("Client: Sending HELLO...");
+        tracing::info!("Sending HELLO");
 
         // Transition from Closed to Connecting
         self.state.transition_to(ConnectionState::Connecting)
@@ -133,7 +133,7 @@ impl Client {
                 }
 
                 else => {
-                    println!("Client shutting down: incoming channel closed");
+                    tracing::info!("Client shutting down: incoming channel closed");
                     break;
                 }
             }
@@ -142,15 +142,18 @@ impl Client {
 
     /// Handles a single incoming envelope
     async fn handle_envelope(&mut self, envelope: Envelope) {
-        println!(
-            "Client received: route_id={}, msg_id={}, payload_len={}, state={:?}",
-            envelope.route_id, envelope.msg_id, envelope.payload_len, self.state
+        tracing::debug!(
+            route_id = envelope.route_id,
+            msg_id = envelope.msg_id,
+            payload_len = envelope.payload_len,
+            state = ?self.state,
+            "Client received envelope"
         );
 
         // Dispatch based on route_id: control messages (<100) vs game messages (>=100)
         if envelope.route_id < GAME_MESSAGES_START {
             if let Err(e) = self.handle_control_message(envelope).await {
-                eprintln!("Client: Error handling control message: {}", e);
+                tracing::error!(error = %e, "Error handling control message");
             }
         } else {
             self.handle_game_message(envelope).await;
@@ -163,7 +166,7 @@ impl Client {
             routes::HELLO_OK => self.handle_hello_ok(envelope).await,
             routes::HELLO_ERROR => self.handle_hello_error(envelope).await,
             _ => {
-                println!("Client: unknown control message route_id={}", envelope.route_id);
+                tracing::warn!(route_id = envelope.route_id, "Unknown control message");
                 Ok(())
             }
         }
@@ -171,7 +174,7 @@ impl Client {
 
     /// Handles game messages (route_id >= 100)
     async fn handle_game_message(&mut self, envelope: Envelope) {
-        println!("Client: received game message route_id={}", envelope.route_id);
+        tracing::debug!(route_id = envelope.route_id, "Received game message");
         // Application will handle this
     }
 
@@ -183,15 +186,15 @@ impl Client {
         let hello_ok: HelloOk = codec.decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse HELLO_OK: {}", e)))?;
 
-        println!(
-            "Client: HELLO_OK received (version={:#06x})",
-            hello_ok.server_version
+        tracing::info!(
+            version = format!("{:#06x}", hello_ok.server_version),
+            "HELLO_OK received"
         );
 
         // Transition to Connected state
         self.state.transition_to(ConnectionState::Connected)
             .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
-        println!("Client: Connection established");
+        tracing::info!("Connection established");
 
         Ok(())
     }
@@ -204,9 +207,10 @@ impl Client {
         let hello_error: HelloError = codec.decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse HELLO_ERROR: {}", e)))?;
 
-        eprintln!(
-            "Client: HELLO_ERROR received - {:?}: {}",
-            hello_error.reason, hello_error.message
+        tracing::error!(
+            reason = ?hello_error.reason,
+            message = %hello_error.message,
+            "HELLO_ERROR received"
         );
 
         // Stay in HelloSent (or could transition to Closed)

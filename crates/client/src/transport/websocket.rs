@@ -27,13 +27,13 @@ impl Transport for WebSocketClient {
         incoming_tx: mpsc::Sender<Envelope>,
         mut outgoing_rx: mpsc::Receiver<Envelope>,
     ) -> Result<(), Self::Error> {
-        println!("Connecting to {}", self.url);
+        tracing::info!(url = %self.url, "Connecting to WebSocket server");
 
         let (ws_stream, _) = connect_async(&self.url)
             .await
             .map_err(|e| WebSocketClientError::ConnectionError(e.to_string()))?;
 
-        println!("WebSocket connection established to {}", self.url);
+        tracing::info!(url = %self.url, "WebSocket connection established");
 
         let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
@@ -45,28 +45,28 @@ impl Transport for WebSocketClient {
                             match Envelope::from_bytes(Bytes::from(data)) {
                                 Ok(envelope) => {
                                     if let Err(e) = incoming_tx.send(envelope).await {
-                                        eprintln!("Failed to send envelope to event loop: {}", e);
+                                        tracing::error!(error = %e, "Failed to send envelope to event loop");
                                         break;
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("Failed to parse envelope: {}", e);
+                                    tracing::error!(error = %e, "Failed to parse envelope");
                                 }
                             }
                         }
                         Some(Ok(Message::Close(_))) => {
-                            println!("Server closed connection");
+                            tracing::info!("Server closed connection");
                             break;
                         }
                         Some(Ok(_)) => {
                             // Ignore text messages and other types
                         }
                         Some(Err(e)) => {
-                            eprintln!("WebSocket error: {}", e);
+                            tracing::error!(error = %e, "WebSocket error");
                             break;
                         }
                         None => {
-                            println!("Connection closed");
+                            tracing::info!("Connection closed");
                             break;
                         }
                     }
@@ -75,7 +75,7 @@ impl Transport for WebSocketClient {
                 Some(envelope) = outgoing_rx.recv() => {
                     let bytes = envelope.to_bytes();
                     if let Err(e) = ws_sender.send(Message::Binary(bytes.to_vec())).await {
-                        eprintln!("Failed to send message: {}", e);
+                        tracing::error!(error = %e, "Failed to send message");
                         break;
                     }
                 }

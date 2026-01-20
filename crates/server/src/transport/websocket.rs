@@ -32,9 +32,10 @@ async fn handle_connection(
         .await
         .map_err(|e| WebSocketServerError::WebSocketError(e.to_string()))?;
 
-    println!(
-        "WebSocket handshake completed with {} (session={})",
-        peer_addr, session_id
+    tracing::info!(
+        peer = %peer_addr,
+        session = %session_id,
+        "WebSocket handshake completed"
     );
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
@@ -49,28 +50,28 @@ async fn handle_connection(
                             Ok(envelope) => {
                                 let session_envelope = SessionEnvelope::new(session_id, envelope);
                                 if let Err(e) = incoming_tx.send(session_envelope).await {
-                                    eprintln!("Failed to send envelope to event loop: {}", e);
+                                    tracing::error!(error = %e, "Failed to send envelope to event loop");
                                     break;
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Failed to parse envelope from {}: {}", peer_addr, e);
+                                tracing::error!(peer = %peer_addr, error = %e, "Failed to parse envelope");
                             }
                         }
                     }
                     Some(Ok(Message::Close(_))) => {
-                        println!("Client {} (session={}) disconnected", peer_addr, session_id);
+                        tracing::info!(peer = %peer_addr, session = %session_id, "Client disconnected");
                         break;
                     }
                     Some(Ok(_)) => {
                         // Ignore text messages and other types
                     }
                     Some(Err(e)) => {
-                        eprintln!("WebSocket error from {}: {}", peer_addr, e);
+                        tracing::error!(peer = %peer_addr, error = %e, "WebSocket error");
                         break;
                     }
                     None => {
-                        println!("Connection closed by {} (session={})", peer_addr, session_id);
+                        tracing::info!(peer = %peer_addr, session = %session_id, "Connection closed by client");
                         break;
                     }
                 }
@@ -81,19 +82,19 @@ async fn handle_connection(
                 use futures::SinkExt;
                 let bytes = envelope.to_bytes();
                 if let Err(e) = ws_sender.send(Message::Binary(bytes.to_vec())).await {
-                    eprintln!("Failed to send to WebSocket client {}: {}", peer_addr, e);
+                    tracing::error!(peer = %peer_addr, error = %e, "Failed to send to WebSocket client");
                     break;
                 }
             }
 
             else => {
-                println!("Connection handler for {} (session={}) shutting down", peer_addr, session_id);
+                tracing::debug!(peer = %peer_addr, session = %session_id, "Connection handler shutting down");
                 break;
             }
         }
     }
 
-    println!("Client {} (session={}) connection closed", peer_addr, session_id);
+    tracing::info!(peer = %peer_addr, session = %session_id, "Client connection closed");
     Ok(())
 }
 
@@ -113,7 +114,7 @@ impl WebSocketServer {
             .await
             .map_err(|e| WebSocketServerError::BindError(e.to_string()))?;
 
-        println!("WebSocket server listening on {}", self.addr);
+        tracing::info!(addr = %self.addr, "WebSocket server listening");
 
         // Map of session_id -> channel sender for routing outgoing messages
         let clients: Arc<RwLock<HashMap<SessionId, mpsc::Sender<Envelope>>>> =
@@ -127,7 +128,7 @@ impl WebSocketServer {
                             // Generate unique session ID for this client
                             let session_id = SessionId::new_v4();
 
-                            println!("New connection from {} (session={})", peer_addr, session_id);
+                            tracing::info!(peer = %peer_addr, session = %session_id, "New connection");
 
                             // Create a channel for outgoing messages to this specific client
                             let (client_tx, client_rx) = mpsc::channel::<Envelope>(100);
@@ -150,17 +151,17 @@ impl WebSocketServer {
                                     client_rx,
                                     peer_addr,
                                 ).await {
-                                    eprintln!("Connection error from {} (session={}): {}", peer_addr, session_id, e);
+                                    tracing::error!(peer = %peer_addr, session = %session_id, error = %e, "Connection error");
                                 }
 
                                 // Clean up the client from the routing map on disconnect
                                 let mut clients_lock = clients_clone.write().await;
                                 clients_lock.remove(&session_id);
-                                println!("Removed session {} from routing table", session_id);
+                                tracing::debug!(session = %session_id, "Removed session from routing table");
                             });
                         }
                         Err(e) => {
-                            eprintln!("Failed to accept connection: {}", e);
+                            tracing::error!(error = %e, "Failed to accept connection");
                         }
                     }
                 }
@@ -173,12 +174,13 @@ impl WebSocketServer {
                     let clients_lock = clients.read().await;
                     if let Some(client_tx) = clients_lock.get(&session_id) {
                         if let Err(e) = client_tx.send(envelope).await {
-                            eprintln!("Failed to route envelope to session {}: {}", session_id, e);
+                            tracing::error!(session = %session_id, error = %e, "Failed to route envelope");
                         }
                     } else {
-                        eprintln!(
-                            "Cannot route envelope to session {}: client not connected (route_id={})",
-                            session_id, envelope.route_id
+                        tracing::warn!(
+                            session = %session_id,
+                            route_id = envelope.route_id,
+                            "Cannot route envelope: client not connected"
                         );
                     }
                 }
