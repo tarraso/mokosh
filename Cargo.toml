@@ -27,6 +27,7 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 [workspace.package]
@@ -43,6 +44,7 @@ bitflags = "2.4"
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+postcard = { version = "1.0", features = ["alloc"] }
 tokio = { version = "1.42", features = ["rt", "rt-multi-thread", "sync", "macros", "time", "net"] }
 tokio-tungstenite = "0.21"
 futures = "0.3"

@@ -36,6 +36,8 @@
 //! assert_eq!(received.payload, Bytes::from_static(b"Hello, Godot!"));
 //! ```
 
+pub mod codec;
+pub mod codec_registry;
 pub mod envelope;
 pub mod error;
 pub mod messages;

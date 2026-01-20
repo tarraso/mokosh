@@ -16,6 +16,9 @@ pub enum EnvelopeError {
 
     #[error("Invalid flags: {0}")]
     InvalidFlags(u8),
+
+    #[error("Codec error: {0}")]
+    CodecError(String),
 }
 
 /// Result type for envelope operations
@@ -42,6 +45,9 @@ pub enum ProtocolError {
 
     #[error("JSON serialization error: {0}")]
     JsonError(String),
+
+    #[error("Codec error: {0}")]
+    CodecError(String),
 }
 
 impl From<serde_json::Error> for ProtocolError {

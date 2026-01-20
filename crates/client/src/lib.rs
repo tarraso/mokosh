@@ -20,8 +20,8 @@
 
 pub mod transport;
 
-use bytes::Bytes;
 use godot_netlink_protocol::{
+    codec_registry::CodecRegistry,
     messages::{routes, Hello, HelloError, HelloOk, GAME_MESSAGES_START},
     ConnectionState, Envelope, EnvelopeFlags, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
@@ -43,19 +43,58 @@ pub struct Client {
 
     /// Message ID counter for outgoing messages
     next_msg_id: u64,
+
+    /// Codec registry for encoding/decoding messages
+    codec_registry: CodecRegistry,
+
+    /// Codec ID to use for control messages (default: 1 = JSON)
+    control_codec_id: u8,
+
+    /// Codec ID to use for game messages
+    game_codec_id: u8,
 }
 
 impl Client {
-    /// Creates a new client with the given channels
+    /// Creates a new client with the given channels and default codec registry
+    ///
+    /// Uses JSON codec (ID=1) for both control and game messages.
     pub fn new(
         incoming_rx: mpsc::Receiver<Envelope>,
         outgoing_tx: mpsc::Sender<Envelope>,
+    ) -> Self {
+        Self::with_codecs(
+            incoming_rx,
+            outgoing_tx,
+            CodecRegistry::default(),
+            1, // JSON for control messages
+            1, // JSON for game messages
+        )
+    }
+
+    /// Creates a new client with custom codec registry and codec IDs
+    ///
+    /// # Arguments
+    ///
+    /// * `incoming_rx` - Channel to receive envelopes from transport
+    /// * `outgoing_tx` - Channel to send envelopes to transport
+    /// * `codec_registry` - Registry of available codecs
+    /// * `control_codec_id` - Codec ID for control messages (typically 1=JSON)
+    /// * `game_codec_id` - Codec ID for game messages (1=JSON, 2=Postcard, 3=Raw)
+    pub fn with_codecs(
+        incoming_rx: mpsc::Receiver<Envelope>,
+        outgoing_tx: mpsc::Sender<Envelope>,
+        codec_registry: CodecRegistry,
+        control_codec_id: u8,
+        game_codec_id: u8,
     ) -> Self {
         Self {
             incoming_rx,
             outgoing_tx,
             state: ConnectionState::Closed,
             next_msg_id: 1,
+            codec_registry,
+            control_codec_id,
+            game_codec_id,
         }
     }
 
@@ -70,7 +109,7 @@ impl Client {
         let hello = Hello {
             protocol_version: CURRENT_PROTOCOL_VERSION,
             min_protocol_version: MIN_PROTOCOL_VERSION,
-            codec_id: 1, // JSON
+            codec_id: self.game_codec_id,
             schema_hash: 0,
         };
 
@@ -138,7 +177,10 @@ impl Client {
 
     /// Handles HELLO_OK message from server
     async fn handle_hello_ok(&mut self, envelope: Envelope) -> Result<(), ClientError> {
-        let hello_ok: HelloOk = serde_json::from_slice(&envelope.payload)
+        let codec = self.codec_registry.get(self.control_codec_id)
+            .ok_or_else(|| ClientError::CodecError(format!("Control codec {} not found", self.control_codec_id)))?;
+
+        let hello_ok: HelloOk = codec.decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse HELLO_OK: {}", e)))?;
 
         println!(
@@ -156,7 +198,10 @@ impl Client {
 
     /// Handles HELLO_ERROR message from server
     async fn handle_hello_error(&mut self, envelope: Envelope) -> Result<(), ClientError> {
-        let hello_error: HelloError = serde_json::from_slice(&envelope.payload)
+        let codec = self.codec_registry.get(self.control_codec_id)
+            .ok_or_else(|| ClientError::CodecError(format!("Control codec {} not found", self.control_codec_id)))?;
+
+        let hello_error: HelloError = codec.decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse HELLO_ERROR: {}", e)))?;
 
         eprintln!(
@@ -174,17 +219,20 @@ impl Client {
         route_id: u16,
         message: &T,
     ) -> Result<(), ClientError> {
-        let payload_bytes = serde_json::to_vec(message)
+        let codec = self.codec_registry.get(self.control_codec_id)
+            .ok_or_else(|| ClientError::CodecError(format!("Control codec {} not found", self.control_codec_id)))?;
+
+        let payload_bytes = codec.encode(message)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to serialize: {}", e)))?;
 
         let envelope = Envelope::new_simple(
             CURRENT_PROTOCOL_VERSION,
-            1, // JSON codec
+            self.control_codec_id,
             0, // schema_hash (not used yet)
             route_id,
             self.next_msg_id,
             EnvelopeFlags::RELIABLE,
-            Bytes::from(payload_bytes),
+            payload_bytes,
         );
 
         self.next_msg_id += 1;
@@ -217,6 +265,9 @@ pub enum ClientError {
 
     #[error("Invalid state transition: {0}")]
     InvalidStateTransition(String),
+
+    #[error("Codec error: {0}")]
+    CodecError(String),
 }
 
 #[cfg(test)]
