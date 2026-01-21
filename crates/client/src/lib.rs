@@ -41,9 +41,6 @@ pub struct Client {
     /// Current connection state
     state: ConnectionState,
 
-    /// Message ID counter for outgoing messages
-    next_msg_id: u64,
-
     /// Codec registry for encoding/decoding messages
     codec_registry: CodecRegistry,
 
@@ -91,7 +88,6 @@ impl Client {
             incoming_rx,
             outgoing_tx,
             state: ConnectionState::Closed,
-            next_msg_id: 1,
             codec_registry,
             control_codec_id,
             game_codec_id,
@@ -234,12 +230,10 @@ impl Client {
             self.control_codec_id,
             0, // schema_hash (not used yet)
             route_id,
-            self.next_msg_id,
+            0, // msg_id (control messages don't need unique IDs)
             EnvelopeFlags::RELIABLE,
             payload_bytes,
         );
-
-        self.next_msg_id += 1;
 
         self.outgoing_tx
             .send(envelope)

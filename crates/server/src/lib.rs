@@ -42,9 +42,6 @@ pub struct Server {
     /// Current connection state
     state: ConnectionState,
 
-    /// Message ID counter for outgoing messages
-    next_msg_id: u64,
-
     /// Current session ID (set during HELLO handshake)
     current_session_id: Option<SessionId>,
 
@@ -95,7 +92,6 @@ impl Server {
             incoming_rx,
             outgoing_tx,
             state: ConnectionState::Connecting,
-            next_msg_id: 1,
             current_session_id: None,
             codec_registry,
             control_codec_id,
@@ -277,12 +273,10 @@ impl Server {
             self.control_codec_id,
             0, // schema_hash (not used yet)
             route_id,
-            self.next_msg_id,
+            0, // msg_id (control messages don't need unique IDs)
             EnvelopeFlags::RELIABLE,
             payload_bytes,
         );
-
-        self.next_msg_id += 1;
 
         // Get the current session ID
         let session_id = self.current_session_id
