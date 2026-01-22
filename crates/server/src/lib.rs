@@ -22,11 +22,35 @@ pub mod transport;
 
 use godot_netlink_protocol::{
     codec_registry::CodecRegistry,
-    messages::{routes, ErrorReason, Hello, HelloError, HelloOk, GAME_MESSAGES_START},
+    messages::{routes, Disconnect, DisconnectReason, ErrorReason, Hello, HelloError, HelloOk, Ping, Pong, GAME_MESSAGES_START},
     negotiate_version, ConnectionState, Envelope, EnvelopeFlags, SessionEnvelope, SessionId,
     CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+
+/// Server configuration
+#[derive(Debug, Clone)]
+pub struct ServerConfig {
+    /// Timeout for HELLO handshake
+    pub hello_timeout: Duration,
+
+    /// Keepalive PING interval
+    pub keepalive_interval: Duration,
+
+    /// Connection timeout if no messages received
+    pub connection_timeout: Duration,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            hello_timeout: Duration::from_secs(5),
+            keepalive_interval: Duration::from_secs(30),
+            connection_timeout: Duration::from_secs(60),
+        }
+    }
+}
 
 /// Server event loop handler
 ///
@@ -53,6 +77,15 @@ pub struct Server {
 
     /// Codec ID to use for game messages (set by client during HELLO)
     game_codec_id: u8,
+
+    /// Last time a message was received (for connection timeout detection)
+    last_received: Instant,
+
+    /// Last time a PING was sent (for keepalive)
+    last_ping_sent: Instant,
+
+    /// Server configuration (timeouts, intervals)
+    config: ServerConfig,
 }
 
 impl Server {
@@ -88,6 +121,35 @@ impl Server {
         control_codec_id: u8,
         game_codec_id: u8,
     ) -> Self {
+        Self::with_config(
+            incoming_rx,
+            outgoing_tx,
+            codec_registry,
+            control_codec_id,
+            game_codec_id,
+            ServerConfig::default(),
+        )
+    }
+
+    /// Creates a new server with full configuration
+    ///
+    /// # Arguments
+    ///
+    /// * `incoming_rx` - Channel to receive session envelopes from transport
+    /// * `outgoing_tx` - Channel to send session envelopes to transport
+    /// * `codec_registry` - Registry of available codecs
+    /// * `control_codec_id` - Codec ID for control messages (typically 1=JSON)
+    /// * `game_codec_id` - Default codec ID for game messages (updated by client HELLO)
+    /// * `config` - Server configuration (timeouts, intervals)
+    pub fn with_config(
+        incoming_rx: mpsc::Receiver<SessionEnvelope>,
+        outgoing_tx: mpsc::Sender<SessionEnvelope>,
+        codec_registry: CodecRegistry,
+        control_codec_id: u8,
+        game_codec_id: u8,
+        config: ServerConfig,
+    ) -> Self {
+        let now = Instant::now();
         Self {
             incoming_rx,
             outgoing_tx,
@@ -96,18 +158,48 @@ impl Server {
             codec_registry,
             control_codec_id,
             game_codec_id,
+            last_received: now,
+            last_ping_sent: now,
+            config,
         }
+    }
+
+    /// Gracefully disconnects a client
+    pub async fn disconnect(&mut self, reason: DisconnectReason, message: String) -> Result<(), ServerError> {
+        tracing::info!(reason = ?reason, message = %message, "Disconnecting client");
+
+        let disconnect = Disconnect { reason, message };
+        self.send_control_message(routes::DISCONNECT, &disconnect).await?;
+
+        // Transition to Closed state
+        self.state.transition_to(ConnectionState::Closed)
+            .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
+
+        Ok(())
     }
 
     /// Runs the main event loop
     ///
     /// This method will block until the incoming channel is closed.
     pub async fn run(mut self) {
+        // Interval for periodic tasks (keepalive check, timeout check)
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+
         loop {
             tokio::select! {
                 Some(session_envelope) = self.incoming_rx.recv() => {
+                    // Update last received time
+                    self.last_received = Instant::now();
                     if let Err(e) = self.handle_session_envelope(session_envelope).await {
                         tracing::error!(error = %e, "Error handling envelope");
+                    }
+                }
+
+                _ = interval.tick() => {
+                    // Periodic tasks: check timeouts and send keepalive
+                    if let Err(e) = self.handle_periodic_tasks().await {
+                        tracing::error!(error = %e, "Periodic task error");
+                        break;
                     }
                 }
 
@@ -117,6 +209,49 @@ impl Server {
                 }
             }
         }
+    }
+
+    /// Handles periodic tasks: timeouts and keepalive
+    async fn handle_periodic_tasks(&mut self) -> Result<(), ServerError> {
+        let now = Instant::now();
+
+        // Check HELLO timeout (only when in Connecting state)
+        if self.state == ConnectionState::Connecting {
+            if now.duration_since(self.last_received) > self.config.hello_timeout {
+                tracing::error!("HELLO handshake timeout");
+                return Err(ServerError::HelloTimeout);
+            }
+        }
+
+        // Check connection timeout (only when connected)
+        if self.state.is_connected() {
+            if now.duration_since(self.last_received) > self.config.connection_timeout {
+                tracing::error!("Connection timeout - no messages received");
+                return Err(ServerError::ConnectionTimeout);
+            }
+
+            // Send keepalive PING
+            if now.duration_since(self.last_ping_sent) > self.config.keepalive_interval {
+                self.send_ping().await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Sends a PING message for keepalive
+    async fn send_ping(&mut self) -> Result<(), ServerError> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let ping = Ping { timestamp };
+        self.send_control_message(routes::PING, &ping).await?;
+        self.last_ping_sent = Instant::now();
+
+        tracing::debug!(timestamp, "Sent PING");
+        Ok(())
     }
 
     /// Handles a single session envelope
@@ -150,6 +285,9 @@ impl Server {
     async fn handle_control_message(&mut self, envelope: Envelope) -> Result<(), ServerError> {
         match envelope.route_id {
             routes::HELLO => self.handle_hello(envelope).await,
+            routes::DISCONNECT => self.handle_disconnect(envelope).await,
+            routes::PING => self.handle_ping(envelope).await,
+            routes::PONG => self.handle_pong(envelope).await,
             _ => {
                 tracing::warn!(route_id = envelope.route_id, "Unknown control message");
                 Ok(())
@@ -256,6 +394,64 @@ impl Server {
         Ok(())
     }
 
+    /// Handles DISCONNECT message from client
+    async fn handle_disconnect(&mut self, envelope: Envelope) -> Result<(), ServerError> {
+        let codec = self.codec_registry.get(self.control_codec_id)
+            .ok_or_else(|| ServerError::CodecError(format!("Control codec {} not found", self.control_codec_id)))?;
+
+        let disconnect: Disconnect = codec.decode(&envelope.payload)
+            .map_err(|e| ServerError::InvalidMessage(format!("Failed to parse DISCONNECT: {}", e)))?;
+
+        tracing::info!(
+            reason = ?disconnect.reason,
+            message = %disconnect.message,
+            "DISCONNECT received from client"
+        );
+
+        // Transition to Closed state
+        self.state.transition_to(ConnectionState::Closed)
+            .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Handles PING message from client
+    async fn handle_ping(&mut self, envelope: Envelope) -> Result<(), ServerError> {
+        let codec = self.codec_registry.get(self.control_codec_id)
+            .ok_or_else(|| ServerError::CodecError(format!("Control codec {} not found", self.control_codec_id)))?;
+
+        let ping: Ping = codec.decode(&envelope.payload)
+            .map_err(|e| ServerError::InvalidMessage(format!("Failed to parse PING: {}", e)))?;
+
+        tracing::debug!(timestamp = ping.timestamp, "PING received, sending PONG");
+
+        // Send PONG with the same timestamp
+        let pong = Pong { timestamp: ping.timestamp };
+        self.send_control_message(routes::PONG, &pong).await?;
+
+        Ok(())
+    }
+
+    /// Handles PONG message from client
+    async fn handle_pong(&mut self, envelope: Envelope) -> Result<(), ServerError> {
+        let codec = self.codec_registry.get(self.control_codec_id)
+            .ok_or_else(|| ServerError::CodecError(format!("Control codec {} not found", self.control_codec_id)))?;
+
+        let pong: Pong = codec.decode(&envelope.payload)
+            .map_err(|e| ServerError::InvalidMessage(format!("Failed to parse PONG: {}", e)))?;
+
+        // Calculate round-trip time
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let rtt = now.saturating_sub(pong.timestamp);
+
+        tracing::debug!(timestamp = pong.timestamp, rtt_ms = rtt, "PONG received");
+
+        Ok(())
+    }
+
     /// Sends a control message to the client
     async fn send_control_message<T: serde::Serialize>(
         &mut self,
@@ -306,6 +502,12 @@ pub enum ServerError {
 
     #[error("Codec error: {0}")]
     CodecError(String),
+
+    #[error("HELLO handshake timeout")]
+    HelloTimeout,
+
+    #[error("Connection timeout - no messages received")]
+    ConnectionTimeout,
 }
 
 #[cfg(test)]

@@ -115,6 +115,67 @@ impl std::fmt::Display for ErrorReason {
     }
 }
 
+/// DISCONNECT message sent by either client or server for graceful disconnection
+///
+/// Provides a reason code and optional message for the disconnection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Disconnect {
+    /// The reason for disconnection
+    pub reason: DisconnectReason,
+
+    /// Optional human-readable message
+    pub message: String,
+}
+
+/// Reasons for disconnection
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DisconnectReason {
+    /// Client requested disconnection
+    ClientRequested,
+
+    /// Server is shutting down
+    ServerShutdown,
+
+    /// Connection idle timeout
+    Timeout,
+
+    /// Protocol error
+    ProtocolError,
+
+    /// Authentication failed
+    AuthenticationFailed,
+}
+
+impl std::fmt::Display for DisconnectReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DisconnectReason::ClientRequested => write!(f, "ClientRequested"),
+            DisconnectReason::ServerShutdown => write!(f, "ServerShutdown"),
+            DisconnectReason::Timeout => write!(f, "Timeout"),
+            DisconnectReason::ProtocolError => write!(f, "ProtocolError"),
+            DisconnectReason::AuthenticationFailed => write!(f, "AuthenticationFailed"),
+        }
+    }
+}
+
+/// PING message for keepalive and latency measurement
+///
+/// The sender includes a timestamp, and the receiver should echo it back in a PONG.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Ping {
+    /// Timestamp when PING was sent (milliseconds since epoch)
+    pub timestamp: u64,
+}
+
+/// PONG message in response to PING
+///
+/// Echoes back the timestamp from the PING message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pong {
+    /// Timestamp from the original PING message
+    pub timestamp: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

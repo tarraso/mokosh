@@ -47,7 +47,7 @@ pub mod version;
 
 pub use envelope::{Envelope, EnvelopeFlags, ENVELOPE_HEADER_SIZE};
 pub use error::{EnvelopeError, ProtocolError, Result};
-pub use messages::{ErrorReason, Hello, HelloError, HelloOk};
+pub use messages::{Disconnect, DisconnectReason, ErrorReason, Hello, HelloError, HelloOk, Ping, Pong};
 pub use state::ConnectionState;
 pub use transport::Transport;
 pub use version::{negotiate_version, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION};
