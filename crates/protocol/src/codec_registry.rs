@@ -34,6 +34,21 @@ pub enum CodecType {
 }
 
 impl CodecType {
+    /// Creates a CodecType from a codec ID
+    ///
+    /// Returns an error if the codec ID is not recognized.
+    pub fn from_id(codec_id: u8) -> Result<Self> {
+        match codec_id {
+            1 => Ok(CodecType::Json(JsonCodec)),
+            2 => Ok(CodecType::Postcard(PostcardCodec)),
+            3 => Ok(CodecType::Raw(RawCodec)),
+            _ => Err(ProtocolError::CodecError(format!(
+                "Unknown codec ID: {}",
+                codec_id
+            ))),
+        }
+    }
+
     /// Returns the codec ID
     pub fn id(&self) -> u8 {
         match self {

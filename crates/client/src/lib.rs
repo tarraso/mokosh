@@ -21,9 +21,8 @@
 pub mod transport;
 
 use godot_netlink_protocol::{
-    codec_registry::CodecRegistry,
     messages::{routes, Disconnect, DisconnectReason, Hello, HelloError, HelloOk, Ping, Pong, GAME_MESSAGES_START},
-    ConnectionState, Envelope, EnvelopeFlags, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
+    CodecType, ConnectionState, Envelope, EnvelopeFlags, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -65,14 +64,11 @@ pub struct Client {
     /// Current connection state
     state: ConnectionState,
 
-    /// Codec registry for encoding/decoding messages
-    codec_registry: CodecRegistry,
+    /// Codec to use for control messages (default: JSON)
+    control_codec: CodecType,
 
-    /// Codec ID to use for control messages (default: 1 = JSON)
-    control_codec_id: u8,
-
-    /// Codec ID to use for game messages
-    game_codec_id: u8,
+    /// Codec to use for game messages
+    game_codec: CodecType,
 
     /// Last time a message was received (for connection timeout detection)
     last_received: Instant,
@@ -85,44 +81,45 @@ pub struct Client {
 }
 
 impl Client {
-    /// Creates a new client with the given channels and default codec registry
+    /// Creates a new client with the given channels and default codecs
     ///
     /// Uses JSON codec (ID=1) for both control and game messages.
     pub fn new(
         incoming_rx: mpsc::Receiver<Envelope>,
         outgoing_tx: mpsc::Sender<Envelope>,
     ) -> Self {
-        Self::with_codecs(
+        Self::with_codec_ids(
             incoming_rx,
             outgoing_tx,
-            CodecRegistry::default(),
             1, // JSON for control messages
             1, // JSON for game messages
         )
     }
 
-    /// Creates a new client with custom codec registry and codec IDs
+    /// Creates a new client with custom codec IDs
     ///
     /// # Arguments
     ///
     /// * `incoming_rx` - Channel to receive envelopes from transport
     /// * `outgoing_tx` - Channel to send envelopes to transport
-    /// * `codec_registry` - Registry of available codecs
     /// * `control_codec_id` - Codec ID for control messages (typically 1=JSON)
     /// * `game_codec_id` - Codec ID for game messages (1=JSON, 2=Postcard, 3=Raw)
-    pub fn with_codecs(
+    pub fn with_codec_ids(
         incoming_rx: mpsc::Receiver<Envelope>,
         outgoing_tx: mpsc::Sender<Envelope>,
-        codec_registry: CodecRegistry,
         control_codec_id: u8,
         game_codec_id: u8,
     ) -> Self {
+        let control_codec = CodecType::from_id(control_codec_id)
+            .unwrap_or_else(|_| panic!("Invalid control codec ID: {}", control_codec_id));
+        let game_codec = CodecType::from_id(game_codec_id)
+            .unwrap_or_else(|_| panic!("Invalid game codec ID: {}", game_codec_id));
+
         Self::with_config(
             incoming_rx,
             outgoing_tx,
-            codec_registry,
-            control_codec_id,
-            game_codec_id,
+            control_codec,
+            game_codec,
             ClientConfig::default(),
         )
     }
@@ -133,16 +130,14 @@ impl Client {
     ///
     /// * `incoming_rx` - Channel to receive envelopes from transport
     /// * `outgoing_tx` - Channel to send envelopes to transport
-    /// * `codec_registry` - Registry of available codecs
-    /// * `control_codec_id` - Codec ID for control messages (typically 1=JSON)
-    /// * `game_codec_id` - Codec ID for game messages (1=JSON, 2=Postcard, 3=Raw)
+    /// * `control_codec` - Codec for control messages (typically JSON)
+    /// * `game_codec` - Codec for game messages (JSON, Postcard, or Raw)
     /// * `config` - Client configuration (timeouts, intervals)
     pub fn with_config(
         incoming_rx: mpsc::Receiver<Envelope>,
         outgoing_tx: mpsc::Sender<Envelope>,
-        codec_registry: CodecRegistry,
-        control_codec_id: u8,
-        game_codec_id: u8,
+        control_codec: CodecType,
+        game_codec: CodecType,
         config: ClientConfig,
     ) -> Self {
         let now = Instant::now();
@@ -150,9 +145,8 @@ impl Client {
             incoming_rx,
             outgoing_tx,
             state: ConnectionState::Closed,
-            codec_registry,
-            control_codec_id,
-            game_codec_id,
+            control_codec,
+            game_codec,
             last_received: now,
             last_ping_sent: now,
             config,
@@ -170,7 +164,7 @@ impl Client {
         let hello = Hello {
             protocol_version: CURRENT_PROTOCOL_VERSION,
             min_protocol_version: MIN_PROTOCOL_VERSION,
-            codec_id: self.game_codec_id,
+            codec_id: self.game_codec.id(),
             schema_hash: 0,
         };
 
@@ -314,10 +308,7 @@ impl Client {
 
     /// Handles HELLO_OK message from server
     async fn handle_hello_ok(&mut self, envelope: Envelope) -> Result<(), ClientError> {
-        let codec = self.codec_registry.get(self.control_codec_id)
-            .ok_or_else(|| ClientError::CodecError(format!("Control codec {} not found", self.control_codec_id)))?;
-
-        let hello_ok: HelloOk = codec.decode(&envelope.payload)
+        let hello_ok: HelloOk = self.control_codec.decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse HELLO_OK: {}", e)))?;
 
         tracing::info!(
@@ -335,10 +326,7 @@ impl Client {
 
     /// Handles HELLO_ERROR message from server
     async fn handle_hello_error(&mut self, envelope: Envelope) -> Result<(), ClientError> {
-        let codec = self.codec_registry.get(self.control_codec_id)
-            .ok_or_else(|| ClientError::CodecError(format!("Control codec {} not found", self.control_codec_id)))?;
-
-        let hello_error: HelloError = codec.decode(&envelope.payload)
+        let hello_error: HelloError = self.control_codec.decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse HELLO_ERROR: {}", e)))?;
 
         tracing::error!(
@@ -353,10 +341,7 @@ impl Client {
 
     /// Handles DISCONNECT message from server
     async fn handle_disconnect(&mut self, envelope: Envelope) -> Result<(), ClientError> {
-        let codec = self.codec_registry.get(self.control_codec_id)
-            .ok_or_else(|| ClientError::CodecError(format!("Control codec {} not found", self.control_codec_id)))?;
-
-        let disconnect: Disconnect = codec.decode(&envelope.payload)
+        let disconnect: Disconnect = self.control_codec.decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse DISCONNECT: {}", e)))?;
 
         tracing::info!(
@@ -374,10 +359,7 @@ impl Client {
 
     /// Handles PING message from server
     async fn handle_ping(&mut self, envelope: Envelope) -> Result<(), ClientError> {
-        let codec = self.codec_registry.get(self.control_codec_id)
-            .ok_or_else(|| ClientError::CodecError(format!("Control codec {} not found", self.control_codec_id)))?;
-
-        let ping: Ping = codec.decode(&envelope.payload)
+        let ping: Ping = self.control_codec.decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse PING: {}", e)))?;
 
         tracing::debug!(timestamp = ping.timestamp, "PING received, sending PONG");
@@ -391,10 +373,7 @@ impl Client {
 
     /// Handles PONG message from server
     async fn handle_pong(&mut self, envelope: Envelope) -> Result<(), ClientError> {
-        let codec = self.codec_registry.get(self.control_codec_id)
-            .ok_or_else(|| ClientError::CodecError(format!("Control codec {} not found", self.control_codec_id)))?;
-
-        let pong: Pong = codec.decode(&envelope.payload)
+        let pong: Pong = self.control_codec.decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse PONG: {}", e)))?;
 
         // Calculate round-trip time
@@ -415,15 +394,12 @@ impl Client {
         route_id: u16,
         message: &T,
     ) -> Result<(), ClientError> {
-        let codec = self.codec_registry.get(self.control_codec_id)
-            .ok_or_else(|| ClientError::CodecError(format!("Control codec {} not found", self.control_codec_id)))?;
-
-        let payload_bytes = codec.encode(message)
+        let payload_bytes = self.control_codec.encode(message)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to serialize: {}", e)))?;
 
         let envelope = Envelope::new_simple(
             CURRENT_PROTOCOL_VERSION,
-            self.control_codec_id,
+            self.control_codec.id(),
             0, // schema_hash (not used yet)
             route_id,
             0, // msg_id (control messages don't need unique IDs)

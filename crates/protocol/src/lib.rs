@@ -45,6 +45,7 @@ pub mod state;
 pub mod transport;
 pub mod version;
 
+pub use codec_registry::CodecType;
 pub use envelope::{Envelope, EnvelopeFlags, ENVELOPE_HEADER_SIZE};
 pub use error::{EnvelopeError, ProtocolError, Result};
 pub use messages::{Disconnect, DisconnectReason, ErrorReason, Hello, HelloError, HelloOk, Ping, Pong};
