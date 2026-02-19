@@ -6,31 +6,24 @@ use godot_netlink_client::Client;
 use godot_netlink_protocol::{
     calculate_global_schema_hash, GameMessage, MessageRegistry,
 };
+use godot_netlink_protocol_derive::GameMessage;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 // ============================================================================
-// Test Messages
+// Test Messages (Using Derive Macro)
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, GameMessage)]
+#[route_id = 100]
 struct TestMessage1 {
     value: u32,
 }
 
-impl GameMessage for TestMessage1 {
-    const ROUTE_ID: u16 = 100;
-    const SCHEMA_HASH: u64 = 0x1111_1111_1111_1111;
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, GameMessage)]
+#[route_id = 101]
 struct TestMessage2 {
     text: String,
-}
-
-impl GameMessage for TestMessage2 {
-    const ROUTE_ID: u16 = 101;
-    const SCHEMA_HASH: u64 = 0x2222_2222_2222_2222;
 }
 
 // ============================================================================
@@ -71,17 +64,17 @@ async fn test_type_safe_send_multiple_messages() {
     // Assert - correct route_id and schema_hash for each
     let env1 = outgoing_rx.recv().await.unwrap();
     assert_eq!(env1.route_id, 100);
-    assert_eq!(env1.schema_hash, 0x1111_1111_1111_1111);
+    assert_eq!(env1.schema_hash, TestMessage1::SCHEMA_HASH); // Auto-generated
     assert_eq!(env1.msg_id, 1);
 
     let env2 = outgoing_rx.recv().await.unwrap();
     assert_eq!(env2.route_id, 101);
-    assert_eq!(env2.schema_hash, 0x2222_2222_2222_2222);
+    assert_eq!(env2.schema_hash, TestMessage2::SCHEMA_HASH); // Auto-generated
     assert_eq!(env2.msg_id, 2);
 
     let env3 = outgoing_rx.recv().await.unwrap();
     assert_eq!(env3.route_id, 100);
-    assert_eq!(env3.schema_hash, 0x1111_1111_1111_1111);
+    assert_eq!(env3.schema_hash, TestMessage1::SCHEMA_HASH); // Auto-generated
     assert_eq!(env3.msg_id, 3);
 }
 
@@ -100,8 +93,8 @@ fn test_message_registry() {
     assert!(registry.is_registered(101));
     assert!(!registry.is_registered(102));
 
-    assert_eq!(registry.get_schema_hash(100), Some(0x1111_1111_1111_1111));
-    assert_eq!(registry.get_schema_hash(101), Some(0x2222_2222_2222_2222));
+    assert_eq!(registry.get_schema_hash(100), Some(TestMessage1::SCHEMA_HASH));
+    assert_eq!(registry.get_schema_hash(101), Some(TestMessage2::SCHEMA_HASH));
     assert_eq!(registry.get_schema_hash(102), None);
 }
 
@@ -117,7 +110,7 @@ fn test_global_schema_hash() {
     let global = calculate_global_schema_hash(&hashes);
 
     // Assert - XOR of both hashes
-    let expected = 0x1111_1111_1111_1111 ^ 0x2222_2222_2222_2222;
+    let expected = TestMessage1::SCHEMA_HASH ^ TestMessage2::SCHEMA_HASH;
     assert_eq!(global, expected);
 }
 

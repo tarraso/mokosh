@@ -89,8 +89,22 @@ pub const ENVELOPE_HEADER_SIZE: usize = 34;
 impl Envelope {
     /// Creates a new envelope with the given parameters
     ///
-    /// This is a low-level API for advanced use cases. Most users should use
-    /// `new_simple()` or the type-safe `Client::send_message()` / `Server::send_message()` APIs.
+    /// # Deprecation Notice
+    ///
+    /// **For game messages (route_id >= 100)**, prefer using the type-safe API:
+    /// - `Client::send_message<T: GameMessage>()`
+    /// - `Server::send_message<T: GameMessage>()`
+    ///
+    /// This low-level API should only be used for:
+    /// - Control messages (route_id < 100)
+    /// - Custom protocol extensions
+    /// - Testing and debugging
+    ///
+    /// The type-safe API provides:
+    /// - Automatic route_id assignment
+    /// - Automatic schema_hash generation
+    /// - Compile-time type checking
+    /// - No manual boilerplate
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         protocol_version: u16,
@@ -117,6 +131,14 @@ impl Envelope {
     }
 
     /// Creates a new envelope with empty correlation_id (not an RPC)
+    ///
+    /// # Deprecation Notice
+    ///
+    /// **For game messages (route_id >= 100)**, prefer using the type-safe API:
+    /// - `Client::send_message<T: GameMessage>()`
+    /// - `Server::send_message<T: GameMessage>()`
+    ///
+    /// See `Envelope::new()` for more details.
     pub fn new_simple(
         protocol_version: u16,
         codec_id: u8,

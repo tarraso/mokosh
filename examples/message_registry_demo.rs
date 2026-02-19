@@ -20,16 +20,20 @@ use godot_netlink_protocol::{
     calculate_global_schema_hash, codec::Codec, Envelope, EnvelopeFlags, GameMessage, MessageRegistry,
     SessionId, CURRENT_PROTOCOL_VERSION,
 };
+use godot_netlink_protocol_derive::GameMessage;
 use godot_netlink_server::Server;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 // ============================================================================
-// Example Game Messages
+// Example Game Messages (Using Derive Macro)
 // ============================================================================
 
 /// Player input from client (movement, jump, etc.)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// Now using #[derive(GameMessage)] with auto SCHEMA_HASH generation!
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, GameMessage)]
+#[route_id = 100]
 struct PlayerInput {
     sequence: u32,
     x: f32,
@@ -37,13 +41,11 @@ struct PlayerInput {
     jump: bool,
 }
 
-impl GameMessage for PlayerInput {
-    const ROUTE_ID: u16 = 100;
-    const SCHEMA_HASH: u64 = 0x1111_2222_3333_4444;
-}
-
 /// Player state from server (position, health, etc.)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// SCHEMA_HASH is automatically generated from struct definition
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, GameMessage)]
+#[route_id = 101]
 struct PlayerState {
     player_id: u32,
     x: f32,
@@ -51,21 +53,14 @@ struct PlayerState {
     health: u32,
 }
 
-impl GameMessage for PlayerState {
-    const ROUTE_ID: u16 = 101;
-    const SCHEMA_HASH: u64 = 0x5555_6666_7777_8888;
-}
-
 /// Chat message (bidirectional)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// No more manual SCHEMA_HASH - it's derived from fields!
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, GameMessage)]
+#[route_id = 102]
 struct ChatMessage {
     sender: String,
     text: String,
-}
-
-impl GameMessage for ChatMessage {
-    const ROUTE_ID: u16 = 102;
-    const SCHEMA_HASH: u64 = 0x9999_AAAA_BBBB_CCCC;
 }
 
 // ============================================================================

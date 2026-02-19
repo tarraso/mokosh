@@ -450,6 +450,18 @@ impl Client {
     }
 
     /// Sends an envelope to the server
+    ///
+    /// # Deprecation Notice
+    ///
+    /// **For game messages (route_id >= 100)**, prefer using the type-safe API:
+    /// ```ignore
+    /// client.send_message(my_message).await?;
+    /// ```
+    ///
+    /// This low-level API should only be used for:
+    /// - Control messages (route_id < 100)
+    /// - Custom protocol extensions
+    /// - Testing and debugging
     pub async fn send(&self, envelope: Envelope) -> Result<(), ClientError> {
         self.outgoing_tx
             .send(envelope)

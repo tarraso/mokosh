@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "crates/protocol",
     "crates/server",
-    "crates/client",
+    "crates/client", "crates/protocol-derive",
 ]
 default-members = ["."]
 
@@ -28,6 +28,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+godot-netlink-protocol-derive = { path = "crates/protocol-derive" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
