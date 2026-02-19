@@ -86,6 +86,13 @@ pub struct HelloError {
 
     /// Human-readable error message
     pub message: String,
+
+    /// Expected schema hash (for SchemaMismatch errors)
+    ///
+    /// When the server rejects a connection due to schema mismatch,
+    /// this field contains the server's expected schema hash for debugging.
+    #[serde(default)]
+    pub expected_schema_hash: u64,
 }
 
 /// Reasons why a HELLO handshake might be rejected
@@ -215,12 +222,28 @@ mod tests {
         let hello_error = HelloError {
             reason: ErrorReason::VersionMismatch,
             message: "Client version too old".to_string(),
+            expected_schema_hash: 0,
         };
 
         let json = serde_json::to_string(&hello_error).unwrap();
         let deserialized: HelloError = serde_json::from_str(&json).unwrap();
 
         assert_eq!(hello_error, deserialized);
+    }
+
+    #[test]
+    fn test_hello_error_with_schema_hash() {
+        let hello_error = HelloError {
+            reason: ErrorReason::SchemaMismatch,
+            message: "Schema mismatch".to_string(),
+            expected_schema_hash: 0x1234_5678_90AB_CDEF,
+        };
+
+        let json = serde_json::to_string(&hello_error).unwrap();
+        let deserialized: HelloError = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(hello_error, deserialized);
+        assert_eq!(deserialized.expected_schema_hash, 0x1234_5678_90AB_CDEF);
     }
 
     #[test]

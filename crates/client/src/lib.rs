@@ -70,6 +70,9 @@ pub struct Client {
     /// Codec to use for game messages
     game_codec: CodecType,
 
+    /// Message ID counter for game messages
+    msg_id_counter: u64,
+
     /// Last time a message was received (for connection timeout detection)
     last_received: Instant,
 
@@ -147,6 +150,7 @@ impl Client {
             state: ConnectionState::Closed,
             control_codec,
             game_codec,
+            msg_id_counter: 1, // Start message IDs from 1
             last_received: now,
             last_ping_sent: now,
             config,
@@ -400,7 +404,7 @@ impl Client {
         let envelope = Envelope::new_simple(
             CURRENT_PROTOCOL_VERSION,
             self.control_codec.id(),
-            0, // schema_hash (not used yet)
+            0, // schema_hash (not used for control messages)
             route_id,
             0, // msg_id (control messages don't need unique IDs)
             EnvelopeFlags::RELIABLE,
@@ -421,6 +425,86 @@ impl Client {
             .send(envelope)
             .await
             .map_err(|_| ClientError::ChannelSendError)
+    }
+
+    /// Sends a type-safe game message to the server
+    ///
+    /// This method provides a type-safe API for sending game messages with
+    /// automatic route ID and schema hash handling.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use godot_netlink_client::Client;
+    /// use godot_netlink_protocol::GameMessage;
+    /// use serde::{Serialize, Deserialize};
+    /// use tokio::sync::mpsc;
+    ///
+    /// #[derive(Serialize, Deserialize)]
+    /// struct PlayerInput {
+    ///     x: f32,
+    ///     y: f32,
+    /// }
+    ///
+    /// impl GameMessage for PlayerInput {
+    ///     const ROUTE_ID: u16 = 100;
+    ///     const SCHEMA_HASH: u64 = 0x1234_5678_90AB_CDEF;
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let (_, incoming_rx) = mpsc::channel(10);
+    ///     let (outgoing_tx, _) = mpsc::channel(10);
+    ///     let mut client = Client::new(incoming_rx, outgoing_tx);
+    ///
+    ///     // Type-safe send - route_id and schema_hash are automatic!
+    ///     client.send_message(PlayerInput { x: 10.0, y: 20.0 }).await.unwrap();
+    /// }
+    /// ```
+    ///
+    /// # Type Safety
+    ///
+    /// This method ensures compile-time correctness:
+    /// - Route ID is automatically set from `T::ROUTE_ID`
+    /// - Schema hash is automatically set from `T::SCHEMA_HASH`
+    /// - Message is serialized with the correct game codec
+    /// - Message ID is auto-incremented
+    pub async fn send_message<T: godot_netlink_protocol::GameMessage>(
+        &mut self,
+        message: T,
+    ) -> Result<(), ClientError> {
+        // Serialize message using game codec
+        let payload_bytes = self.game_codec.encode(&message)
+            .map_err(|e| ClientError::CodecError(format!("Failed to serialize game message: {}", e)))?;
+
+        // Get current msg_id and increment counter
+        let msg_id = self.msg_id_counter;
+        self.msg_id_counter = self.msg_id_counter.wrapping_add(1);
+
+        // Create envelope with automatic route_id and schema_hash from trait
+        let envelope = Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            self.game_codec.id(),
+            T::SCHEMA_HASH,  // Automatic from GameMessage trait
+            T::ROUTE_ID,     // Automatic from GameMessage trait
+            msg_id,
+            EnvelopeFlags::RELIABLE,
+            payload_bytes,
+        );
+
+        self.outgoing_tx
+            .send(envelope)
+            .await
+            .map_err(|_| ClientError::ChannelSendError)?;
+
+        tracing::debug!(
+            route_id = T::ROUTE_ID,
+            schema_hash = format!("{:#018x}", T::SCHEMA_HASH),
+            msg_id,
+            "Sent game message"
+        );
+
+        Ok(())
     }
 }
 

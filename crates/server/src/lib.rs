@@ -74,6 +74,9 @@ pub struct Server {
     /// Codec to use for game messages (set by client during HELLO)
     game_codec: CodecType,
 
+    /// Message ID counter for game messages
+    msg_id_counter: u64,
+
     /// Last time a message was received (for connection timeout detection)
     last_received: Instant,
 
@@ -152,6 +155,7 @@ impl Server {
             current_session_id: None,
             control_codec,
             game_codec,
+            msg_id_counter: 1, // Start message IDs from 1
             last_received: now,
             last_ping_sent: now,
             config,
@@ -347,6 +351,39 @@ impl Server {
                     "Version negotiated"
                 );
 
+                // Schema validation (optional for MVP)
+                // If both client and server provide non-zero schema_hash, validate they match
+                // This allows incremental adoption - systems without message registry use 0
+                const SERVER_SCHEMA_HASH: u64 = 0; // TODO: Calculate from MessageRegistry
+
+                if hello.schema_hash != 0 && SERVER_SCHEMA_HASH != 0 && hello.schema_hash != SERVER_SCHEMA_HASH {
+                    tracing::error!(
+                        client_hash = format!("{:#018x}", hello.schema_hash),
+                        server_hash = format!("{:#018x}", SERVER_SCHEMA_HASH),
+                        "Schema mismatch"
+                    );
+
+                    let hello_error = HelloError {
+                        reason: ErrorReason::SchemaMismatch,
+                        message: format!(
+                            "Schema mismatch: client={:#018x}, server={:#018x}",
+                            hello.schema_hash, SERVER_SCHEMA_HASH
+                        ),
+                        expected_schema_hash: SERVER_SCHEMA_HASH,
+                    };
+
+                    self.send_control_message(routes::HELLO_ERROR, &hello_error)
+                        .await?;
+
+                    return Ok(());
+                }
+
+                tracing::debug!(
+                    client_schema_hash = format!("{:#018x}", hello.schema_hash),
+                    server_schema_hash = format!("{:#018x}", SERVER_SCHEMA_HASH),
+                    "Schema validation passed (or skipped)"
+                );
+
                 // Get the session ID (should be set by now)
                 let session_id = self.current_session_id
                     .ok_or_else(|| ServerError::InvalidMessage("No session ID set".to_string()))?;
@@ -374,6 +411,7 @@ impl Server {
                 let hello_error = HelloError {
                     reason: ErrorReason::VersionMismatch,
                     message: err.to_string(),
+                    expected_schema_hash: 0, // Not relevant for version mismatch
                 };
 
                 self.send_control_message(routes::HELLO_ERROR, &hello_error)
@@ -447,7 +485,7 @@ impl Server {
         let envelope = Envelope::new_simple(
             CURRENT_PROTOCOL_VERSION,
             self.control_codec.id(),
-            0, // schema_hash (not used yet)
+            0, // schema_hash (not used for control messages)
             route_id,
             0, // msg_id (control messages don't need unique IDs)
             EnvelopeFlags::RELIABLE,
@@ -463,6 +501,93 @@ impl Server {
             .send(session_envelope)
             .await
             .map_err(|_| ServerError::ChannelSendError)?;
+
+        Ok(())
+    }
+
+    /// Sends a type-safe game message to a specific client
+    ///
+    /// This method provides a type-safe API for sending game messages with
+    /// automatic route ID and schema hash handling.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use godot_netlink_server::Server;
+    /// use godot_netlink_protocol::{GameMessage, SessionId};
+    /// use serde::{Serialize, Deserialize};
+    /// use tokio::sync::mpsc;
+    ///
+    /// #[derive(Serialize, Deserialize)]
+    /// struct PlayerState {
+    ///     x: f32,
+    ///     y: f32,
+    ///     health: u32,
+    /// }
+    ///
+    /// impl GameMessage for PlayerState {
+    ///     const ROUTE_ID: u16 = 101;
+    ///     const SCHEMA_HASH: u64 = 0xFEDC_BA98_7654_3210;
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let (_, incoming_rx) = mpsc::channel(10);
+    ///     let (outgoing_tx, _) = mpsc::channel(10);
+    ///     let mut server = Server::new(incoming_rx, outgoing_tx);
+    ///
+    ///     let session_id = SessionId::new_v4();
+    ///     // Type-safe send - route_id and schema_hash are automatic!
+    ///     server.send_message(session_id, PlayerState { x: 10.0, y: 20.0, health: 100 })
+    ///         .await
+    ///         .unwrap();
+    /// }
+    /// ```
+    ///
+    /// # Type Safety
+    ///
+    /// This method ensures compile-time correctness:
+    /// - Route ID is automatically set from `T::ROUTE_ID`
+    /// - Schema hash is automatically set from `T::SCHEMA_HASH`
+    /// - Message is serialized with the correct game codec
+    /// - Message ID is auto-incremented
+    pub async fn send_message<T: godot_netlink_protocol::GameMessage>(
+        &mut self,
+        session_id: SessionId,
+        message: T,
+    ) -> Result<(), ServerError> {
+        // Serialize message using game codec
+        let payload_bytes = self.game_codec.encode(&message)
+            .map_err(|e| ServerError::CodecError(format!("Failed to serialize game message: {}", e)))?;
+
+        // Get current msg_id and increment counter
+        let msg_id = self.msg_id_counter;
+        self.msg_id_counter = self.msg_id_counter.wrapping_add(1);
+
+        // Create envelope with automatic route_id and schema_hash from trait
+        let envelope = Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            self.game_codec.id(),
+            T::SCHEMA_HASH,  // Automatic from GameMessage trait
+            T::ROUTE_ID,     // Automatic from GameMessage trait
+            msg_id,
+            EnvelopeFlags::RELIABLE,
+            payload_bytes,
+        );
+
+        let session_envelope = SessionEnvelope::new(session_id, envelope);
+        self.outgoing_tx
+            .send(session_envelope)
+            .await
+            .map_err(|_| ServerError::ChannelSendError)?;
+
+        tracing::debug!(
+            route_id = T::ROUTE_ID,
+            schema_hash = format!("{:#018x}", T::SCHEMA_HASH),
+            msg_id,
+            session = %session_id,
+            "Sent game message"
+        );
 
         Ok(())
     }
