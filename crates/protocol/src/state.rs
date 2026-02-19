@@ -13,8 +13,10 @@ use crate::error::{ProtocolError, Result};
 
 /// Connection state in the protocol state machine
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ConnectionState {
     /// No connection established
+    #[default]
     Closed,
 
     /// Transport connection established, but HELLO not sent yet
@@ -90,11 +92,6 @@ impl ConnectionState {
     }
 }
 
-impl Default for ConnectionState {
-    fn default() -> Self {
-        ConnectionState::Closed
-    }
-}
 
 impl std::fmt::Display for ConnectionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -88,6 +88,10 @@ pub const ENVELOPE_HEADER_SIZE: usize = 34;
 
 impl Envelope {
     /// Creates a new envelope with the given parameters
+    ///
+    /// This is a low-level API for advanced use cases. Most users should use
+    /// `new_simple()` or the type-safe `Client::send_message()` / `Server::send_message()` APIs.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         protocol_version: u16,
         codec_id: u8,

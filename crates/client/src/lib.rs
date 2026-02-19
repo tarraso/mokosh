@@ -22,7 +22,7 @@ pub mod transport;
 
 use godot_netlink_protocol::{
     messages::{routes, Disconnect, DisconnectReason, Hello, HelloError, HelloOk, Ping, Pong, GAME_MESSAGES_START},
-    CodecType, ConnectionState, Envelope, EnvelopeFlags, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
+    CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -81,6 +81,9 @@ pub struct Client {
 
     /// Client configuration (timeouts, intervals)
     config: ClientConfig,
+
+    /// Optional message registry for schema validation
+    message_registry: Option<MessageRegistry>,
 }
 
 impl Client {
@@ -143,6 +146,27 @@ impl Client {
         game_codec: CodecType,
         config: ClientConfig,
     ) -> Self {
+        Self::with_full_config(incoming_rx, outgoing_tx, control_codec, game_codec, config, None)
+    }
+
+    /// Creates a new client with message registry for schema validation
+    ///
+    /// # Arguments
+    ///
+    /// * `incoming_rx` - Channel to receive envelopes from transport
+    /// * `outgoing_tx` - Channel to send envelopes to transport
+    /// * `control_codec` - Codec for control messages (typically JSON)
+    /// * `game_codec` - Codec for game messages (JSON, Postcard, or Raw)
+    /// * `config` - Client configuration (timeouts, intervals)
+    /// * `message_registry` - Optional message registry for schema validation
+    pub fn with_full_config(
+        incoming_rx: mpsc::Receiver<Envelope>,
+        outgoing_tx: mpsc::Sender<Envelope>,
+        control_codec: CodecType,
+        game_codec: CodecType,
+        config: ClientConfig,
+        message_registry: Option<MessageRegistry>,
+    ) -> Self {
         let now = Instant::now();
         Self {
             incoming_rx,
@@ -154,6 +178,7 @@ impl Client {
             last_received: now,
             last_ping_sent: now,
             config,
+            message_registry,
         }
     }
 
@@ -165,11 +190,17 @@ impl Client {
         self.state.transition_to(ConnectionState::Connecting)
             .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
 
+        // Calculate schema hash from message registry (or 0 if not set)
+        let schema_hash = self.message_registry
+            .as_ref()
+            .map(|r| r.global_schema_hash())
+            .unwrap_or(0);
+
         let hello = Hello {
             protocol_version: CURRENT_PROTOCOL_VERSION,
             min_protocol_version: MIN_PROTOCOL_VERSION,
             codec_id: self.game_codec.id(),
-            schema_hash: 0,
+            schema_hash,
         };
 
         self.send_control_message(routes::HELLO, &hello).await?;
@@ -231,12 +262,11 @@ impl Client {
         let now = Instant::now();
 
         // Check HELLO timeout
-        if self.state == ConnectionState::HelloSent {
-            if now.duration_since(self.last_received) > self.config.hello_timeout {
+        if self.state == ConnectionState::HelloSent
+            && now.duration_since(self.last_received) > self.config.hello_timeout {
                 tracing::error!("HELLO handshake timeout");
                 return Err(ClientError::HelloTimeout);
             }
-        }
 
         // Check connection timeout (only when connected)
         if self.state.is_connected() {
@@ -404,7 +434,7 @@ impl Client {
         let envelope = Envelope::new_simple(
             CURRENT_PROTOCOL_VERSION,
             self.control_codec.id(),
-            0, // schema_hash (not used for control messages)
+            0,
             route_id,
             0, // msg_id (control messages don't need unique IDs)
             EnvelopeFlags::RELIABLE,

@@ -22,7 +22,7 @@ pub mod transport;
 
 use godot_netlink_protocol::{
     messages::{routes, Disconnect, DisconnectReason, ErrorReason, Hello, HelloError, HelloOk, Ping, Pong, GAME_MESSAGES_START},
-    negotiate_version, CodecType, ConnectionState, Envelope, EnvelopeFlags, SessionEnvelope, SessionId,
+    negotiate_version, CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, SessionEnvelope, SessionId,
     CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -85,6 +85,9 @@ pub struct Server {
 
     /// Server configuration (timeouts, intervals)
     config: ServerConfig,
+
+    /// Optional message registry for schema validation
+    message_registry: Option<MessageRegistry>,
 }
 
 impl Server {
@@ -147,6 +150,27 @@ impl Server {
         game_codec: CodecType,
         config: ServerConfig,
     ) -> Self {
+        Self::with_full_config(incoming_rx, outgoing_tx, control_codec, game_codec, config, None)
+    }
+
+    /// Creates a new server with message registry for schema validation
+    ///
+    /// # Arguments
+    ///
+    /// * `incoming_rx` - Channel to receive session envelopes from transport
+    /// * `outgoing_tx` - Channel to send session envelopes to transport
+    /// * `control_codec` - Codec for control messages (typically JSON)
+    /// * `game_codec` - Codec for game messages (JSON, Postcard, or Raw)
+    /// * `config` - Server configuration (timeouts, intervals)
+    /// * `message_registry` - Optional message registry for schema validation
+    pub fn with_full_config(
+        incoming_rx: mpsc::Receiver<SessionEnvelope>,
+        outgoing_tx: mpsc::Sender<SessionEnvelope>,
+        control_codec: CodecType,
+        game_codec: CodecType,
+        config: ServerConfig,
+        message_registry: Option<MessageRegistry>,
+    ) -> Self {
         let now = Instant::now();
         Self {
             incoming_rx,
@@ -159,6 +183,7 @@ impl Server {
             last_received: now,
             last_ping_sent: now,
             config,
+            message_registry,
         }
     }
 
@@ -214,12 +239,11 @@ impl Server {
         let now = Instant::now();
 
         // Check HELLO timeout (only when in Connecting state)
-        if self.state == ConnectionState::Connecting {
-            if now.duration_since(self.last_received) > self.config.hello_timeout {
+        if self.state == ConnectionState::Connecting
+            && now.duration_since(self.last_received) > self.config.hello_timeout {
                 tracing::error!("HELLO handshake timeout");
                 return Err(ServerError::HelloTimeout);
             }
-        }
 
         // Check connection timeout (only when connected)
         if self.state.is_connected() {
@@ -354,12 +378,15 @@ impl Server {
                 // Schema validation (optional for MVP)
                 // If both client and server provide non-zero schema_hash, validate they match
                 // This allows incremental adoption - systems without message registry use 0
-                const SERVER_SCHEMA_HASH: u64 = 0; // TODO: Calculate from MessageRegistry
+                let server_schema_hash = self.message_registry
+                    .as_ref()
+                    .map(|r| r.global_schema_hash())
+                    .unwrap_or(0);
 
-                if hello.schema_hash != 0 && SERVER_SCHEMA_HASH != 0 && hello.schema_hash != SERVER_SCHEMA_HASH {
+                if hello.schema_hash != 0 && server_schema_hash != 0 && hello.schema_hash != server_schema_hash {
                     tracing::error!(
                         client_hash = format!("{:#018x}", hello.schema_hash),
-                        server_hash = format!("{:#018x}", SERVER_SCHEMA_HASH),
+                        server_hash = format!("{:#018x}", server_schema_hash),
                         "Schema mismatch"
                     );
 
@@ -367,9 +394,9 @@ impl Server {
                         reason: ErrorReason::SchemaMismatch,
                         message: format!(
                             "Schema mismatch: client={:#018x}, server={:#018x}",
-                            hello.schema_hash, SERVER_SCHEMA_HASH
+                            hello.schema_hash, server_schema_hash
                         ),
-                        expected_schema_hash: SERVER_SCHEMA_HASH,
+                        expected_schema_hash: server_schema_hash,
                     };
 
                     self.send_control_message(routes::HELLO_ERROR, &hello_error)
@@ -380,7 +407,7 @@ impl Server {
 
                 tracing::debug!(
                     client_schema_hash = format!("{:#018x}", hello.schema_hash),
-                    server_schema_hash = format!("{:#018x}", SERVER_SCHEMA_HASH),
+                    server_schema_hash = format!("{:#018x}", server_schema_hash),
                     "Schema validation passed (or skipped)"
                 );
 
@@ -485,7 +512,7 @@ impl Server {
         let envelope = Envelope::new_simple(
             CURRENT_PROTOCOL_VERSION,
             self.control_codec.id(),
-            0, // schema_hash (not used for control messages)
+            0,
             route_id,
             0, // msg_id (control messages don't need unique IDs)
             EnvelopeFlags::RELIABLE,

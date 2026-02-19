@@ -73,7 +73,7 @@ fn test_different_payload_sizes() {
         );
 
         let bytes = envelope.to_bytes();
-        let deserialized = Envelope::from_bytes(bytes).expect(&format!("Failed at size {}", size));
+        let deserialized = Envelope::from_bytes(bytes).unwrap_or_else(|_| panic!("Failed at size {}", size));
 
         assert_eq!(deserialized.payload.len(), size);
         assert_eq!(deserialized.payload_len, size as u32);

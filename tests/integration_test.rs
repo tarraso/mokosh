@@ -147,7 +147,7 @@ async fn test_large_payload() {
 async fn test_different_envelope_flags() {
     let harness = setup_test_harness().await;
 
-    let test_cases = vec![
+    let test_cases = [
         EnvelopeFlags::RELIABLE,
         EnvelopeFlags::ENCRYPTED,
         EnvelopeFlags::COMPRESSED,
