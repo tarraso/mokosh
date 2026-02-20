@@ -21,7 +21,7 @@
 pub mod transport;
 
 use godot_netlink_protocol::{
-    messages::{routes, Disconnect, DisconnectReason, Hello, HelloError, HelloOk, Ping, Pong, GAME_MESSAGES_START},
+    messages::{routes, AuthRequest, AuthResponse, Disconnect, DisconnectReason, Hello, HelloError, HelloOk, Ping, Pong, GAME_MESSAGES_START},
     CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -226,6 +226,50 @@ impl Client {
         Ok(())
     }
 
+    /// Authenticate with the server
+    ///
+    /// # Arguments
+    ///
+    /// * `method` - Authentication method (e.g., "mock", "passcode", "steam")
+    /// * `credentials` - Authentication credentials as bytes
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) if authentication succeeds, Err otherwise
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Not in Connected state
+    /// - Failed to send AUTH_REQUEST
+    /// - Server rejected authentication
+    pub async fn authenticate(&mut self, method: &str, credentials: &[u8]) -> Result<(), ClientError> {
+        // Authentication only allowed in Connected state
+        if !self.state.is_connected() {
+            return Err(ClientError::InvalidStateTransition(
+                format!("Cannot authenticate in state: {}", self.state)
+            ));
+        }
+
+        tracing::info!(method = %method, "Sending AUTH_REQUEST");
+
+        // Create and send AUTH_REQUEST
+        let auth_request = AuthRequest {
+            method: method.to_string(),
+            credentials: credentials.to_vec(),
+        };
+
+        self.send_control_message(routes::AUTH_REQUEST, &auth_request).await?;
+
+        // Transition to AuthPending state
+        self.state.transition_to(ConnectionState::AuthPending)
+            .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
+
+        tracing::debug!("Waiting for AUTH_RESPONSE");
+
+        Ok(())
+    }
+
     /// Runs the main event loop
     ///
     /// This method will block until the incoming channel is closed.
@@ -324,6 +368,7 @@ impl Client {
         match envelope.route_id {
             routes::HELLO_OK => self.handle_hello_ok(envelope).await,
             routes::HELLO_ERROR => self.handle_hello_error(envelope).await,
+            routes::AUTH_RESPONSE => self.handle_auth_response(envelope).await,
             routes::DISCONNECT => self.handle_disconnect(envelope).await,
             routes::PING => self.handle_ping(envelope).await,
             routes::PONG => self.handle_pong(envelope).await,
@@ -387,6 +432,45 @@ impl Client {
         // Transition to Closed state
         self.state.transition_to(ConnectionState::Closed)
             .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Handles AUTH_RESPONSE message from server
+    async fn handle_auth_response(&mut self, envelope: Envelope) -> Result<(), ClientError> {
+        // AUTH_RESPONSE only allowed in AuthPending state
+        if !self.state.is_auth_pending() {
+            tracing::warn!(state = ?self.state, "AUTH_RESPONSE received in invalid state");
+            return Ok(());
+        }
+
+        // Parse AUTH_RESPONSE
+        let auth_response: AuthResponse = self.control_codec.decode(&envelope.payload)
+            .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse AUTH_RESPONSE: {}", e)))?;
+
+        if auth_response.success {
+            tracing::info!(
+                session_id = ?auth_response.session_id,
+                "Authentication successful"
+            );
+
+            // Transition to Authorized state
+            self.state.transition_to(ConnectionState::Authorized)
+                .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
+        } else {
+            tracing::warn!(
+                error = ?auth_response.error_message,
+                "Authentication failed"
+            );
+
+            // Transition to Closed state
+            self.state.transition_to(ConnectionState::Closed)
+                .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
+
+            return Err(ClientError::AuthenticationFailed(
+                auth_response.error_message.unwrap_or_else(|| "Unknown error".to_string())
+            ));
+        }
 
         Ok(())
     }
@@ -570,6 +654,9 @@ pub enum ClientError {
 
     #[error("Connection timeout - no messages received")]
     ConnectionTimeout,
+
+    #[error("Authentication failed: {0}")]
+    AuthenticationFailed(String),
 }
 
 #[cfg(test)]

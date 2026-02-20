@@ -21,10 +21,12 @@
 pub mod transport;
 
 use godot_netlink_protocol::{
-    messages::{routes, Disconnect, DisconnectReason, ErrorReason, Hello, HelloError, HelloOk, Ping, Pong, GAME_MESSAGES_START},
+    auth::AuthProvider,
+    messages::{routes, AuthRequest, AuthResponse, Disconnect, DisconnectReason, ErrorReason, Hello, HelloError, HelloOk, Ping, Pong, GAME_MESSAGES_START},
     negotiate_version, CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, SessionEnvelope, SessionId,
     CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
@@ -39,6 +41,9 @@ pub struct ServerConfig {
 
     /// Connection timeout if no messages received
     pub connection_timeout: Duration,
+
+    /// Whether authentication is required before sending game messages
+    pub auth_required: bool,
 }
 
 impl Default for ServerConfig {
@@ -47,6 +52,7 @@ impl Default for ServerConfig {
             hello_timeout: Duration::from_secs(5),
             keepalive_interval: Duration::from_secs(30),
             connection_timeout: Duration::from_secs(60),
+            auth_required: false, // Backward compatible: auth is optional by default
         }
     }
 }
@@ -88,6 +94,9 @@ pub struct Server {
 
     /// Optional message registry for schema validation
     message_registry: Option<MessageRegistry>,
+
+    /// Optional authentication provider
+    auth_provider: Option<Arc<dyn AuthProvider>>,
 }
 
 impl Server {
@@ -171,6 +180,37 @@ impl Server {
         config: ServerConfig,
         message_registry: Option<MessageRegistry>,
     ) -> Self {
+        Self::with_auth(
+            incoming_rx,
+            outgoing_tx,
+            control_codec,
+            game_codec,
+            config,
+            message_registry,
+            None, // No auth provider by default
+        )
+    }
+
+    /// Creates a new server with full configuration including authentication
+    ///
+    /// # Arguments
+    ///
+    /// * `incoming_rx` - Channel to receive session envelopes from transport
+    /// * `outgoing_tx` - Channel to send session envelopes to transport
+    /// * `control_codec` - Codec for control messages (typically JSON)
+    /// * `game_codec` - Codec for game messages (JSON, Postcard, or Raw)
+    /// * `config` - Server configuration (timeouts, intervals, auth_required)
+    /// * `message_registry` - Optional message registry for schema validation
+    /// * `auth_provider` - Optional authentication provider
+    pub fn with_auth(
+        incoming_rx: mpsc::Receiver<SessionEnvelope>,
+        outgoing_tx: mpsc::Sender<SessionEnvelope>,
+        control_codec: CodecType,
+        game_codec: CodecType,
+        config: ServerConfig,
+        message_registry: Option<MessageRegistry>,
+        auth_provider: Option<Arc<dyn AuthProvider>>,
+    ) -> Self {
         let now = Instant::now();
         Self {
             incoming_rx,
@@ -184,6 +224,7 @@ impl Server {
             last_ping_sent: now,
             config,
             message_registry,
+            auth_provider,
         }
     }
 
@@ -307,6 +348,7 @@ impl Server {
     async fn handle_control_message(&mut self, envelope: Envelope) -> Result<(), ServerError> {
         match envelope.route_id {
             routes::HELLO => self.handle_hello(envelope).await,
+            routes::AUTH_REQUEST => self.handle_auth_request(envelope).await,
             routes::DISCONNECT => self.handle_disconnect(envelope).await,
             routes::PING => self.handle_ping(envelope).await,
             routes::PONG => self.handle_pong(envelope).await,
@@ -319,8 +361,18 @@ impl Server {
 
     /// Handles game messages (route_id >= 100)
     async fn handle_game_message(&mut self, envelope: Envelope) -> Result<(), ServerError> {
-        // Game messages are only allowed in Connected state
-        if !self.state.is_connected() {
+        // Game messages require authentication if auth_required is true
+        if self.config.auth_required && !self.state.is_authorized() {
+            tracing::debug!(
+                route_id = envelope.route_id,
+                state = ?self.state,
+                "Rejecting game message: authentication required"
+            );
+            return Ok(());
+        }
+
+        // Game messages are only allowed in Connected or Authorized state
+        if !self.state.is_connected() && !self.state.is_authorized() {
             tracing::debug!(
                 route_id = envelope.route_id,
                 state = ?self.state,
@@ -416,11 +468,16 @@ impl Server {
                     .ok_or_else(|| ServerError::InvalidMessage("No session ID set".to_string()))?;
 
                 // Send HELLO_OK with the session ID
+                let available_auth_methods = self.auth_provider
+                    .as_ref()
+                    .map(|provider| provider.supported_methods())
+                    .unwrap_or_default();
+
                 let hello_ok = HelloOk {
                     server_version: negotiated_version,
                     session_id: session_id.to_string(),
-                    auth_required: false,       // No auth for MVP
-                    available_auth_methods: vec![],
+                    auth_required: self.config.auth_required,
+                    available_auth_methods,
                 };
 
                 self.send_control_message(routes::HELLO_OK, &hello_ok)
@@ -445,6 +502,98 @@ impl Server {
                     .await?;
 
                 // Stay in Connecting state (will disconnect)
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handles AUTH_REQUEST message from client
+    async fn handle_auth_request(&mut self, envelope: Envelope) -> Result<(), ServerError> {
+        // Auth is only allowed in Connected state
+        if !self.state.is_connected() {
+            tracing::warn!(state = ?self.state, "AUTH_REQUEST received in invalid state");
+            return Ok(());
+        }
+
+        // Parse AUTH_REQUEST
+        let auth_request: AuthRequest = self.control_codec.decode(&envelope.payload)
+            .map_err(|e| ServerError::InvalidMessage(format!("Failed to parse AUTH_REQUEST: {}", e)))?;
+
+        tracing::info!(method = %auth_request.method, "AUTH_REQUEST received");
+
+        // Check if auth provider is available
+        let Some(ref auth_provider) = self.auth_provider else {
+            tracing::warn!("AUTH_REQUEST received but no auth provider configured");
+            let auth_response = AuthResponse {
+                success: false,
+                session_id: None,
+                error_message: Some("Authentication not supported".to_string()),
+            };
+            self.send_control_message(routes::AUTH_RESPONSE, &auth_response).await?;
+            return Ok(());
+        };
+
+        // Transition to AuthPending state
+        self.state.transition_to(ConnectionState::AuthPending)
+            .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
+
+        // Call auth provider
+        match auth_provider.authenticate(&auth_request.method, &auth_request.credentials).await {
+            Ok(auth_result) => {
+                use godot_netlink_protocol::auth::AuthResult;
+
+                match auth_result {
+                    AuthResult::Success { session_id } => {
+                        tracing::info!(session_id = %session_id, "Authentication successful");
+
+                        // Parse session_id from string to UUID
+                        // For now, just keep using the existing session_id from HELLO
+                        // The auth provider's session_id is informational only
+
+                        // Send success response
+                        let auth_response = AuthResponse {
+                            success: true,
+                            session_id: Some(session_id),
+                            error_message: None,
+                        };
+                        self.send_control_message(routes::AUTH_RESPONSE, &auth_response).await?;
+
+                        // Transition to Authorized state
+                        self.state.transition_to(ConnectionState::Authorized)
+                            .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
+                    }
+                    AuthResult::Failure { error_message } => {
+                        tracing::warn!(error = %error_message, "Authentication failed");
+
+                        // Send failure response
+                        let auth_response = AuthResponse {
+                            success: false,
+                            session_id: None,
+                            error_message: Some(error_message),
+                        };
+                        self.send_control_message(routes::AUTH_RESPONSE, &auth_response).await?;
+
+                        // Transition back to Closed (reject connection)
+                        self.state.transition_to(ConnectionState::Closed)
+                            .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Auth provider error");
+
+                // Send failure response
+                let auth_response = AuthResponse {
+                    success: false,
+                    session_id: None,
+                    error_message: Some(format!("Authentication error: {}", e)),
+                };
+                self.send_control_message(routes::AUTH_RESPONSE, &auth_response).await?;
+
+                // Transition back to Closed
+                self.state.transition_to(ConnectionState::Closed)
+                    .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
             }
         }
 

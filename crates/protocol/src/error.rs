@@ -40,6 +40,9 @@ pub enum ProtocolError {
         server_max: u16,
     },
 
+    #[error("Authentication failed: {0}")]
+    AuthenticationFailed(String),
+
     #[error("Envelope error: {0}")]
     Envelope(#[from] EnvelopeError),
 

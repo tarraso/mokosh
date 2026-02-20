@@ -2,11 +2,11 @@
 //!
 //! State transitions:
 //! ```text
-//! Client: CLOSED → CONNECTING → HELLO_SENT → CONNECTED
-//! Server: CLOSED → CONNECTING ───────────────→ CONNECTED
-//!           ↑          ↓            ↓             ↓
-//!           └──────────┴────────────┴─────────────┘
-//!                      (any error/disconnect)
+//! Client: CLOSED → CONNECTING → HELLO_SENT → CONNECTED → AUTH_PENDING → AUTHORIZED
+//! Server: CLOSED → CONNECTING ───────────────→ CONNECTED → AUTH_PENDING → AUTHORIZED
+//!           ↑          ↓            ↓             ↓             ↓            ↓
+//!           └──────────┴────────────┴─────────────┴─────────────┴────────────┘
+//!                                  (any error/disconnect)
 //! ```
 
 use crate::error::{ProtocolError, Result};
@@ -27,6 +27,12 @@ pub enum ConnectionState {
 
     /// HELLO_OK received, connection fully established
     Connected,
+
+    /// AUTH_REQUEST sent/received, waiting for AUTH_RESPONSE
+    AuthPending,
+
+    /// Authentication successful, ready for game messages
+    Authorized,
 }
 
 impl ConnectionState {
@@ -48,7 +54,16 @@ impl ConnectionState {
             (HelloSent, Closed) => true,    // HELLO_ERROR or timeout
 
             // From Connected
-            (Connected, Closed) => true, // disconnect
+            (Connected, AuthPending) => true, // AUTH_REQUEST sent/received
+            (Connected, Authorized) => true,  // Skip auth (not required)
+            (Connected, Closed) => true,      // disconnect
+
+            // From AuthPending
+            (AuthPending, Authorized) => true, // AUTH_RESPONSE success
+            (AuthPending, Closed) => true,     // AUTH_RESPONSE failure or timeout
+
+            // From Authorized
+            (Authorized, Closed) => true, // disconnect
 
             // Any state can stay in same state
             (a, b) if a == &b => true,
@@ -90,6 +105,18 @@ impl ConnectionState {
     pub fn is_hello_pending(&self) -> bool {
         matches!(self, ConnectionState::HelloSent)
     }
+
+    /// Returns true if authentication is pending
+    #[inline]
+    pub fn is_auth_pending(&self) -> bool {
+        matches!(self, ConnectionState::AuthPending)
+    }
+
+    /// Returns true if authentication is complete
+    #[inline]
+    pub fn is_authorized(&self) -> bool {
+        matches!(self, ConnectionState::Authorized)
+    }
 }
 
 
@@ -100,6 +127,8 @@ impl std::fmt::Display for ConnectionState {
             ConnectionState::Connecting => write!(f, "Connecting"),
             ConnectionState::HelloSent => write!(f, "HelloSent"),
             ConnectionState::Connected => write!(f, "Connected"),
+            ConnectionState::AuthPending => write!(f, "AuthPending"),
+            ConnectionState::Authorized => write!(f, "Authorized"),
         }
     }
 }
@@ -162,6 +191,8 @@ mod tests {
         assert!(!ConnectionState::Connecting.is_connected());
         assert!(ConnectionState::HelloSent.is_hello_pending());
         assert!(ConnectionState::Connected.is_connected());
+        assert!(ConnectionState::AuthPending.is_auth_pending());
+        assert!(ConnectionState::Authorized.is_authorized());
     }
 
     #[test]
@@ -176,6 +207,8 @@ mod tests {
         assert_eq!(ConnectionState::Connecting.to_string(), "Connecting");
         assert_eq!(ConnectionState::HelloSent.to_string(), "HelloSent");
         assert_eq!(ConnectionState::Connected.to_string(), "Connected");
+        assert_eq!(ConnectionState::AuthPending.to_string(), "AuthPending");
+        assert_eq!(ConnectionState::Authorized.to_string(), "Authorized");
     }
 
     #[test]
@@ -193,5 +226,54 @@ mod tests {
         // Disconnect
         assert!(state.transition_to(ConnectionState::Closed).is_ok());
         assert_eq!(state, ConnectionState::Closed);
+    }
+
+    #[test]
+    fn test_auth_flow_transitions() {
+        let mut state = ConnectionState::Connected;
+
+        // Connected → AuthPending
+        assert!(state.transition_to(ConnectionState::AuthPending).is_ok());
+        assert_eq!(state, ConnectionState::AuthPending);
+
+        // AuthPending → Authorized
+        assert!(state.transition_to(ConnectionState::Authorized).is_ok());
+        assert_eq!(state, ConnectionState::Authorized);
+
+        // Authorized → Closed
+        assert!(state.transition_to(ConnectionState::Closed).is_ok());
+        assert_eq!(state, ConnectionState::Closed);
+    }
+
+    #[test]
+    fn test_auth_failure_transition() {
+        let mut state = ConnectionState::Connected;
+
+        // Connected → AuthPending
+        assert!(state.transition_to(ConnectionState::AuthPending).is_ok());
+
+        // AuthPending → Closed (auth failed)
+        assert!(state.transition_to(ConnectionState::Closed).is_ok());
+        assert_eq!(state, ConnectionState::Closed);
+    }
+
+    #[test]
+    fn test_skip_auth_transition() {
+        let mut state = ConnectionState::Connected;
+
+        // Connected → Authorized (skip auth if not required)
+        assert!(state.transition_to(ConnectionState::Authorized).is_ok());
+        assert_eq!(state, ConnectionState::Authorized);
+    }
+
+    #[test]
+    fn test_invalid_auth_transitions() {
+        let mut state = ConnectionState::Closed;
+
+        // Closed → AuthPending (skip handshake)
+        assert!(state.transition_to(ConnectionState::AuthPending).is_err());
+
+        // Closed → Authorized (skip everything)
+        assert!(state.transition_to(ConnectionState::Authorized).is_err());
     }
 }

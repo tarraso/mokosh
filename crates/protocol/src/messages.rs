@@ -122,6 +122,36 @@ impl std::fmt::Display for ErrorReason {
     }
 }
 
+/// AUTH_REQUEST message sent by client to authenticate
+///
+/// Contains the authentication method and credentials/token data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AuthRequest {
+    /// Authentication method (e.g., "passcode", "steam", "google")
+    pub method: String,
+
+    /// Authentication credentials (format depends on method)
+    /// - passcode: UTF-8 string passcode
+    /// - steam: Steam session ticket bytes
+    /// - google: Google OAuth token
+    pub credentials: Vec<u8>,
+}
+
+/// AUTH_RESPONSE message sent by server after authentication attempt
+///
+/// Indicates success or failure and optionally provides a session ID.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AuthResponse {
+    /// Whether authentication was successful
+    pub success: bool,
+
+    /// Session ID assigned by server (only present on success)
+    pub session_id: Option<String>,
+
+    /// Error message (only present on failure)
+    pub error_message: Option<String>,
+}
+
 /// DISCONNECT message sent by either client or server for graceful disconnection
 ///
 /// Provides a reason code and optional message for the disconnection.
@@ -250,5 +280,52 @@ mod tests {
     fn test_error_reason_display() {
         assert_eq!(ErrorReason::VersionMismatch.to_string(), "VersionMismatch");
         assert_eq!(ErrorReason::ServerFull.to_string(), "ServerFull");
+    }
+
+    #[test]
+    fn test_auth_request_serialization() {
+        let auth_request = AuthRequest {
+            method: "passcode".to_string(),
+            credentials: b"my-secret-passcode".to_vec(),
+        };
+
+        let json = serde_json::to_string(&auth_request).unwrap();
+        let deserialized: AuthRequest = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(auth_request, deserialized);
+        assert_eq!(auth_request.method, "passcode");
+        assert_eq!(auth_request.credentials, b"my-secret-passcode");
+    }
+
+    #[test]
+    fn test_auth_response_success() {
+        let auth_response = AuthResponse {
+            success: true,
+            session_id: Some("session-123".to_string()),
+            error_message: None,
+        };
+
+        let json = serde_json::to_string(&auth_response).unwrap();
+        let deserialized: AuthResponse = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(auth_response, deserialized);
+        assert!(auth_response.success);
+        assert_eq!(auth_response.session_id, Some("session-123".to_string()));
+    }
+
+    #[test]
+    fn test_auth_response_failure() {
+        let auth_response = AuthResponse {
+            success: false,
+            session_id: None,
+            error_message: Some("Invalid passcode".to_string()),
+        };
+
+        let json = serde_json::to_string(&auth_response).unwrap();
+        let deserialized: AuthResponse = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(auth_response, deserialized);
+        assert!(!auth_response.success);
+        assert_eq!(auth_response.error_message, Some("Invalid passcode".to_string()));
     }
 }

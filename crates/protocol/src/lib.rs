@@ -36,6 +36,7 @@
 //! assert_eq!(received.payload, Bytes::from_static(b"Hello, Godot!"));
 //! ```
 
+pub mod auth;
 pub mod codec;
 pub mod codec_registry;
 pub mod envelope;
