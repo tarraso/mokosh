@@ -79,6 +79,9 @@ pub struct Client {
     /// Last time a PING was sent (for keepalive)
     last_ping_sent: Instant,
 
+    /// Last measured round-trip time (RTT) from PING/PONG
+    last_rtt: Option<Duration>,
+
     /// Client configuration (timeouts, intervals)
     config: ClientConfig,
 
@@ -177,6 +180,7 @@ impl Client {
             msg_id_counter: 1, // Start message IDs from 1
             last_received: now,
             last_ping_sent: now,
+            last_rtt: None,
             config,
             message_registry,
         }
@@ -224,6 +228,21 @@ impl Client {
             .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Returns the last measured round-trip time (RTT) from PING/PONG exchange
+    ///
+    /// Returns `None` if no PONG has been received yet.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// if let Some(rtt) = client.get_last_rtt() {
+    ///     println!("Current RTT: {}ms", rtt.as_millis());
+    /// }
+    /// ```
+    pub fn get_last_rtt(&self) -> Option<Duration> {
+        self.last_rtt
     }
 
     /// Authenticate with the server
@@ -499,9 +518,12 @@ impl Client {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        let rtt = now.saturating_sub(pong.timestamp);
+        let rtt_ms = now.saturating_sub(pong.timestamp);
 
-        tracing::debug!(timestamp = pong.timestamp, rtt_ms = rtt, "PONG received");
+        // Store RTT for public API access
+        self.last_rtt = Some(Duration::from_millis(rtt_ms));
+
+        tracing::debug!(timestamp = pong.timestamp, rtt_ms, "PONG received");
 
         Ok(())
     }

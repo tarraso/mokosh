@@ -26,9 +26,52 @@ use godot_netlink_protocol::{
     negotiate_version, CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, SessionEnvelope, SessionId,
     CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+
+/// Per-client session state
+///
+/// Each connected client has its own SessionState which tracks:
+/// - Connection state (Connecting, Connected, Authorized, etc.)
+/// - Timing information (last activity, last PING, RTT)
+/// - Client-specific configuration (codec preferences)
+#[derive(Debug)]
+struct SessionState {
+    /// Current connection state for this client
+    state: ConnectionState,
+
+    /// Last time a message was received from this client
+    last_received: Instant,
+
+    /// Last time a PING was sent to this client
+    last_ping_sent: Instant,
+
+    /// Last measured round-trip time (RTT) for this client
+    last_rtt: Option<Duration>,
+
+    /// Codec to use for game messages (set by client during HELLO)
+    game_codec: CodecType,
+
+    /// Message ID counter for game messages to this client
+    msg_id_counter: u64,
+}
+
+impl SessionState {
+    /// Creates a new session state for a newly connected client
+    fn new(game_codec: CodecType) -> Self {
+        let now = Instant::now();
+        Self {
+            state: ConnectionState::Connecting,
+            last_received: now,
+            last_ping_sent: now,
+            last_rtt: None,
+            game_codec,
+            msg_id_counter: 1,
+        }
+    }
+}
 
 /// Server configuration
 #[derive(Debug, Clone)]
@@ -61,6 +104,10 @@ impl Default for ServerConfig {
 ///
 /// The server receives envelopes from incoming channel, processes them,
 /// and sends responses through the outgoing channel.
+///
+/// The server supports multiple concurrent client connections. Each client
+/// is tracked independently in the `sessions` HashMap, with per-client state,
+/// RTT measurements, and keepalive timers.
 pub struct Server {
     /// Channel to receive envelopes from transport layer
     incoming_rx: mpsc::Receiver<SessionEnvelope>,
@@ -68,26 +115,15 @@ pub struct Server {
     /// Channel to send envelopes to transport layer
     outgoing_tx: mpsc::Sender<SessionEnvelope>,
 
-    /// Current connection state
-    state: ConnectionState,
-
-    /// Current session ID (set during HELLO handshake)
-    current_session_id: Option<SessionId>,
+    /// Map of active client sessions
+    /// Each SessionId maps to a SessionState containing per-client data
+    sessions: HashMap<SessionId, SessionState>,
 
     /// Codec to use for control messages (default: JSON)
     control_codec: CodecType,
 
-    /// Codec to use for game messages (set by client during HELLO)
-    game_codec: CodecType,
-
-    /// Message ID counter for game messages
-    msg_id_counter: u64,
-
-    /// Last time a message was received (for connection timeout detection)
-    last_received: Instant,
-
-    /// Last time a PING was sent (for keepalive)
-    last_ping_sent: Instant,
+    /// Default codec for game messages (can be overridden per-client during HELLO)
+    default_game_codec: CodecType,
 
     /// Server configuration (timeouts, intervals)
     config: ServerConfig,
@@ -211,35 +247,103 @@ impl Server {
         message_registry: Option<MessageRegistry>,
         auth_provider: Option<Arc<dyn AuthProvider>>,
     ) -> Self {
-        let now = Instant::now();
         Self {
             incoming_rx,
             outgoing_tx,
-            state: ConnectionState::Connecting,
-            current_session_id: None,
+            sessions: HashMap::new(), // Initially no connected clients
             control_codec,
-            game_codec,
-            msg_id_counter: 1, // Start message IDs from 1
-            last_received: now,
-            last_ping_sent: now,
+            default_game_codec: game_codec, // Default, overridden by client HELLO
             config,
             message_registry,
             auth_provider,
         }
     }
 
-    /// Gracefully disconnects a client
-    pub async fn disconnect(&mut self, reason: DisconnectReason, message: String) -> Result<(), ServerError> {
-        tracing::info!(reason = ?reason, message = %message, "Disconnecting client");
+    /// Gracefully disconnects a specific client session
+    ///
+    /// # Arguments
+    ///
+    /// * `session_id` - The session ID of the client to disconnect
+    /// * `reason` - Reason for disconnection
+    /// * `message` - Human-readable disconnect message
+    pub async fn disconnect_session(
+        &mut self,
+        session_id: SessionId,
+        reason: DisconnectReason,
+        message: String,
+    ) -> Result<(), ServerError> {
+        tracing::info!(
+            session = %session_id,
+            reason = ?reason,
+            message = %message,
+            "Disconnecting client session"
+        );
 
-        let disconnect = Disconnect { reason, message };
-        self.send_control_message(routes::DISCONNECT, &disconnect).await?;
+        let disconnect = Disconnect { reason: reason.clone(), message: message.clone() };
+        self.send_control_message(session_id, routes::DISCONNECT, &disconnect).await?;
 
-        // Transition to Closed state
-        self.state.transition_to(ConnectionState::Closed)
-            .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
+        // Remove session from HashMap
+        if let Some(session_state) = self.sessions.remove(&session_id) {
+            tracing::debug!(
+                session = %session_id,
+                final_state = ?session_state.state,
+                "Session removed from server"
+            );
+        }
 
         Ok(())
+    }
+
+    /// Returns the RTT for a specific client session
+    ///
+    /// # Arguments
+    ///
+    /// * `session_id` - The session ID to query
+    ///
+    /// # Returns
+    ///
+    /// `Some(Duration)` if RTT has been measured for this session, `None` otherwise
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// if let Some(rtt) = server.get_session_rtt(session_id) {
+    ///     println!("Client RTT: {}ms", rtt.as_millis());
+    /// }
+    /// ```
+    pub fn get_session_rtt(&self, session_id: SessionId) -> Option<Duration> {
+        self.sessions.get(&session_id).and_then(|s| s.last_rtt)
+    }
+
+    /// Returns a list of all active session IDs
+    ///
+    /// # Returns
+    ///
+    /// A vector of SessionId for all currently connected clients
+    pub fn get_active_sessions(&self) -> Vec<SessionId> {
+        self.sessions.keys().copied().collect()
+    }
+
+    /// Returns the number of currently connected clients
+    ///
+    /// # Returns
+    ///
+    /// The count of active sessions
+    pub fn client_count(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// Returns the connection state for a specific session
+    ///
+    /// # Arguments
+    ///
+    /// * `session_id` - The session ID to query
+    ///
+    /// # Returns
+    ///
+    /// `Some(ConnectionState)` if session exists, `None` otherwise
+    pub fn get_session_state(&self, session_id: SessionId) -> Option<ConnectionState> {
+        self.sessions.get(&session_id).map(|s| s.state)
     }
 
     /// Runs the main event loop
@@ -252,8 +356,7 @@ impl Server {
         loop {
             tokio::select! {
                 Some(session_envelope) = self.incoming_rx.recv() => {
-                    // Update last received time
-                    self.last_received = Instant::now();
+                    // Handle the envelope (which will update last_received for the session)
                     if let Err(e) = self.handle_session_envelope(session_envelope).await {
                         tracing::error!(error = %e, "Error handling envelope");
                     }
@@ -275,45 +378,70 @@ impl Server {
         }
     }
 
-    /// Handles periodic tasks: timeouts and keepalive
+    /// Handles periodic tasks: timeouts and keepalive for all sessions
     async fn handle_periodic_tasks(&mut self) -> Result<(), ServerError> {
         let now = Instant::now();
+        let mut sessions_to_remove = Vec::new();
+        let mut sessions_to_ping = Vec::new();
 
-        // Check HELLO timeout (only when in Connecting state)
-        if self.state == ConnectionState::Connecting
-            && now.duration_since(self.last_received) > self.config.hello_timeout {
-                tracing::error!("HELLO handshake timeout");
-                return Err(ServerError::HelloTimeout);
-            }
+        // Iterate over all sessions to check timeouts
+        for (session_id, session_state) in &self.sessions {
+            // Check HELLO timeout (only when in Connecting state)
+            if session_state.state == ConnectionState::Connecting
+                && now.duration_since(session_state.last_received) > self.config.hello_timeout {
+                    tracing::error!(session = %session_id, "HELLO handshake timeout");
+                    sessions_to_remove.push(*session_id);
+                    continue;
+                }
 
-        // Check connection timeout (only when connected)
-        if self.state.is_connected() {
-            if now.duration_since(self.last_received) > self.config.connection_timeout {
-                tracing::error!("Connection timeout - no messages received");
-                return Err(ServerError::ConnectionTimeout);
-            }
+            // Check connection timeout (only when connected or authorized)
+            if session_state.state.is_connected() || session_state.state.is_authorized() {
+                if now.duration_since(session_state.last_received) > self.config.connection_timeout {
+                    tracing::error!(session = %session_id, "Connection timeout - no messages received");
+                    sessions_to_remove.push(*session_id);
+                    continue;
+                }
 
-            // Send keepalive PING
-            if now.duration_since(self.last_ping_sent) > self.config.keepalive_interval {
-                self.send_ping().await?;
+                // Check if we need to send keepalive PING
+                if now.duration_since(session_state.last_ping_sent) > self.config.keepalive_interval {
+                    sessions_to_ping.push(*session_id);
+                }
             }
+        }
+
+        // Send PINGs to sessions that need it
+        for session_id in sessions_to_ping {
+            if let Err(e) = self.send_ping(session_id).await {
+                tracing::error!(session = %session_id, error = %e, "Failed to send PING");
+                sessions_to_remove.push(session_id);
+            }
+        }
+
+        // Remove timed-out sessions
+        for session_id in sessions_to_remove {
+            self.sessions.remove(&session_id);
+            tracing::info!(session = %session_id, "Session removed due to timeout");
         }
 
         Ok(())
     }
 
-    /// Sends a PING message for keepalive
-    async fn send_ping(&mut self) -> Result<(), ServerError> {
+    /// Sends a PING message for keepalive to a specific client
+    async fn send_ping(&mut self, session_id: SessionId) -> Result<(), ServerError> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
         let ping = Ping { timestamp };
-        self.send_control_message(routes::PING, &ping).await?;
-        self.last_ping_sent = Instant::now();
+        self.send_control_message(session_id, routes::PING, &ping).await?;
 
-        tracing::debug!(timestamp, "Sent PING");
+        // Update last_ping_sent for this session
+        if let Some(session_state) = self.sessions.get_mut(&session_id) {
+            session_state.last_ping_sent = Instant::now();
+        }
+
+        tracing::debug!(session = %session_id, timestamp, "Sent PING");
         Ok(())
     }
 
@@ -322,71 +450,86 @@ impl Server {
         let session_id = session_envelope.session_id;
         let envelope = session_envelope.envelope;
 
-        // Store the session ID if not already set
-        if self.current_session_id.is_none() {
-            self.current_session_id = Some(session_id);
+        // Get or create session state for this client
+        // New clients start in Connecting state
+        if !self.sessions.contains_key(&session_id) {
+            tracing::info!(session = %session_id, "New client session created");
+            self.sessions.insert(
+                session_id,
+                SessionState::new(self.default_game_codec.clone()),
+            );
         }
+
+        // Update last_received timestamp for this session
+        if let Some(session_state) = self.sessions.get_mut(&session_id) {
+            session_state.last_received = Instant::now();
+        }
+
+        // Get session state for logging
+        let session_state = self.sessions.get(&session_id).unwrap();
 
         tracing::debug!(
             session = %session_id,
             route_id = envelope.route_id,
             msg_id = envelope.msg_id,
             payload_len = envelope.payload_len,
-            state = ?self.state,
+            state = ?session_state.state,
             "Server received envelope"
         );
 
         // Dispatch based on route_id: control messages (<100) vs game messages (>=100)
         if envelope.route_id < GAME_MESSAGES_START {
-            self.handle_control_message(envelope).await
+            self.handle_control_message(session_id, envelope).await
         } else {
-            self.handle_game_message(envelope).await
+            self.handle_game_message(session_id, envelope).await
         }
     }
 
     /// Handles control messages (route_id < 100)
-    async fn handle_control_message(&mut self, envelope: Envelope) -> Result<(), ServerError> {
+    async fn handle_control_message(&mut self, session_id: SessionId, envelope: Envelope) -> Result<(), ServerError> {
         match envelope.route_id {
-            routes::HELLO => self.handle_hello(envelope).await,
-            routes::AUTH_REQUEST => self.handle_auth_request(envelope).await,
-            routes::DISCONNECT => self.handle_disconnect(envelope).await,
-            routes::PING => self.handle_ping(envelope).await,
-            routes::PONG => self.handle_pong(envelope).await,
+            routes::HELLO => self.handle_hello(session_id, envelope).await,
+            routes::AUTH_REQUEST => self.handle_auth_request(session_id, envelope).await,
+            routes::DISCONNECT => self.handle_disconnect(session_id, envelope).await,
+            routes::PING => self.handle_ping(session_id, envelope).await,
+            routes::PONG => self.handle_pong(session_id, envelope).await,
             _ => {
-                tracing::warn!(route_id = envelope.route_id, "Unknown control message");
+                tracing::warn!(session = %session_id, route_id = envelope.route_id, "Unknown control message");
                 Ok(())
             }
         }
     }
 
     /// Handles game messages (route_id >= 100)
-    async fn handle_game_message(&mut self, envelope: Envelope) -> Result<(), ServerError> {
+    async fn handle_game_message(&mut self, session_id: SessionId, envelope: Envelope) -> Result<(), ServerError> {
+        // Get session state to check authorization
+        let session_state = self.sessions.get(&session_id)
+            .ok_or_else(|| ServerError::InvalidMessage(format!("Session not found: {}", session_id)))?;
+
         // Game messages require authentication if auth_required is true
-        if self.config.auth_required && !self.state.is_authorized() {
+        if self.config.auth_required && !session_state.state.is_authorized() {
             tracing::debug!(
+                session = %session_id,
                 route_id = envelope.route_id,
-                state = ?self.state,
+                state = ?session_state.state,
                 "Rejecting game message: authentication required"
             );
             return Ok(());
         }
 
         // Game messages are only allowed in Connected or Authorized state
-        if !self.state.is_connected() && !self.state.is_authorized() {
+        if !session_state.state.is_connected() && !session_state.state.is_authorized() {
             tracing::debug!(
+                session = %session_id,
                 route_id = envelope.route_id,
-                state = ?self.state,
+                state = ?session_state.state,
                 "Rejecting game message in invalid state"
             );
             return Ok(());
         }
 
-        // For now, echo back to the same session
-        tracing::debug!(route_id = envelope.route_id, "Echoing game message");
-
-        // Get the current session ID
-        let session_id = self.current_session_id
-            .ok_or_else(|| ServerError::InvalidMessage("No session ID set".to_string()))?;
+        // Echo the message back to this specific client
+        tracing::debug!(session = %session_id, route_id = envelope.route_id, "Echoing game message");
 
         let session_envelope = SessionEnvelope::new(session_id, envelope);
         self.outgoing_tx
@@ -398,20 +541,25 @@ impl Server {
     }
 
     /// Handles HELLO message from client
-    async fn handle_hello(&mut self, envelope: Envelope) -> Result<(), ServerError> {
+    async fn handle_hello(&mut self, session_id: SessionId, envelope: Envelope) -> Result<(), ServerError> {
         // Parse HELLO message using control codec
         let hello: Hello = self.control_codec.decode(&envelope.payload)
             .map_err(|e| ServerError::InvalidMessage(format!("Failed to parse HELLO: {}", e)))?;
 
         tracing::info!(
+            session = %session_id,
             version = format!("{:#06x}", hello.protocol_version),
             min_version = format!("{:#06x}", hello.min_protocol_version),
             codec_id = hello.codec_id,
             "HELLO received from client"
         );
 
+        // Get session state and update game codec
+        let session_state = self.sessions.get_mut(&session_id)
+            .ok_or_else(|| ServerError::InvalidMessage(format!("Session not found: {}", session_id)))?;
+
         // Store the client's requested codec for game messages
-        self.game_codec = CodecType::from_id(hello.codec_id)
+        session_state.game_codec = CodecType::from_id(hello.codec_id)
             .map_err(|e| ServerError::CodecError(e.to_string()))?;
 
         // Negotiate version
@@ -451,21 +599,18 @@ impl Server {
                         expected_schema_hash: server_schema_hash,
                     };
 
-                    self.send_control_message(routes::HELLO_ERROR, &hello_error)
+                    self.send_control_message(session_id, routes::HELLO_ERROR, &hello_error)
                         .await?;
 
                     return Ok(());
                 }
 
                 tracing::debug!(
+                    session = %session_id,
                     client_schema_hash = format!("{:#018x}", hello.schema_hash),
                     server_schema_hash = format!("{:#018x}", server_schema_hash),
                     "Schema validation passed (or skipped)"
                 );
-
-                // Get the session ID (should be set by now)
-                let session_id = self.current_session_id
-                    .ok_or_else(|| ServerError::InvalidMessage("No session ID set".to_string()))?;
 
                 // Send HELLO_OK with the session ID
                 let available_auth_methods = self.auth_provider
@@ -480,16 +625,20 @@ impl Server {
                     available_auth_methods,
                 };
 
-                self.send_control_message(routes::HELLO_OK, &hello_ok)
+                self.send_control_message(session_id, routes::HELLO_OK, &hello_ok)
                     .await?;
 
-                // Transition to Connected state
-                self.state.transition_to(ConnectionState::Connected)
+                // Transition to Connected state for this session
+                let session_state = self.sessions.get_mut(&session_id)
+                    .ok_or_else(|| ServerError::InvalidMessage(format!("Session not found: {}", session_id)))?;
+
+                session_state.state.transition_to(ConnectionState::Connected)
                     .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
+
                 tracing::info!(session = %session_id, "Connection established");
             }
             Err(err) => {
-                tracing::error!(error = %err, "Version mismatch");
+                tracing::error!(session = %session_id, error = %err, "Version mismatch");
 
                 // Send HELLO_ERROR
                 let hello_error = HelloError {
@@ -498,7 +647,7 @@ impl Server {
                     expected_schema_hash: 0, // Not relevant for version mismatch
                 };
 
-                self.send_control_message(routes::HELLO_ERROR, &hello_error)
+                self.send_control_message(session_id, routes::HELLO_ERROR, &hello_error)
                     .await?;
 
                 // Stay in Connecting state (will disconnect)
@@ -509,10 +658,14 @@ impl Server {
     }
 
     /// Handles AUTH_REQUEST message from client
-    async fn handle_auth_request(&mut self, envelope: Envelope) -> Result<(), ServerError> {
+    async fn handle_auth_request(&mut self, session_id: SessionId, envelope: Envelope) -> Result<(), ServerError> {
+        // Get session state
+        let session_state = self.sessions.get(&session_id)
+            .ok_or_else(|| ServerError::InvalidMessage(format!("Session not found: {}", session_id)))?;
+
         // Auth is only allowed in Connected state
-        if !self.state.is_connected() {
-            tracing::warn!(state = ?self.state, "AUTH_REQUEST received in invalid state");
+        if !session_state.state.is_connected() {
+            tracing::warn!(session = %session_id, state = ?session_state.state, "AUTH_REQUEST received in invalid state");
             return Ok(());
         }
 
@@ -520,22 +673,25 @@ impl Server {
         let auth_request: AuthRequest = self.control_codec.decode(&envelope.payload)
             .map_err(|e| ServerError::InvalidMessage(format!("Failed to parse AUTH_REQUEST: {}", e)))?;
 
-        tracing::info!(method = %auth_request.method, "AUTH_REQUEST received");
+        tracing::info!(session = %session_id, method = %auth_request.method, "AUTH_REQUEST received");
 
         // Check if auth provider is available
         let Some(ref auth_provider) = self.auth_provider else {
-            tracing::warn!("AUTH_REQUEST received but no auth provider configured");
+            tracing::warn!(session = %session_id, "AUTH_REQUEST received but no auth provider configured");
             let auth_response = AuthResponse {
                 success: false,
                 session_id: None,
                 error_message: Some("Authentication not supported".to_string()),
             };
-            self.send_control_message(routes::AUTH_RESPONSE, &auth_response).await?;
+            self.send_control_message(session_id, routes::AUTH_RESPONSE, &auth_response).await?;
             return Ok(());
         };
 
-        // Transition to AuthPending state
-        self.state.transition_to(ConnectionState::AuthPending)
+        // Transition to AuthPending state for this session
+        let session_state = self.sessions.get_mut(&session_id)
+            .ok_or_else(|| ServerError::InvalidMessage(format!("Session not found: {}", session_id)))?;
+
+        session_state.state.transition_to(ConnectionState::AuthPending)
             .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
 
         // Call auth provider
@@ -544,27 +700,26 @@ impl Server {
                 use godot_netlink_protocol::auth::AuthResult;
 
                 match auth_result {
-                    AuthResult::Success { session_id } => {
-                        tracing::info!(session_id = %session_id, "Authentication successful");
-
-                        // Parse session_id from string to UUID
-                        // For now, just keep using the existing session_id from HELLO
-                        // The auth provider's session_id is informational only
+                    AuthResult::Success { session_id: auth_session_id } => {
+                        tracing::info!(session = %session_id, auth_session_id = %auth_session_id, "Authentication successful");
 
                         // Send success response
                         let auth_response = AuthResponse {
                             success: true,
-                            session_id: Some(session_id),
+                            session_id: Some(auth_session_id),
                             error_message: None,
                         };
-                        self.send_control_message(routes::AUTH_RESPONSE, &auth_response).await?;
+                        self.send_control_message(session_id, routes::AUTH_RESPONSE, &auth_response).await?;
 
-                        // Transition to Authorized state
-                        self.state.transition_to(ConnectionState::Authorized)
+                        // Transition to Authorized state for this session
+                        let session_state = self.sessions.get_mut(&session_id)
+                            .ok_or_else(|| ServerError::InvalidMessage(format!("Session not found: {}", session_id)))?;
+
+                        session_state.state.transition_to(ConnectionState::Authorized)
                             .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
                     }
                     AuthResult::Failure { error_message } => {
-                        tracing::warn!(error = %error_message, "Authentication failed");
+                        tracing::warn!(session = %session_id, error = %error_message, "Authentication failed");
 
                         // Send failure response
                         let auth_response = AuthResponse {
@@ -572,16 +727,16 @@ impl Server {
                             session_id: None,
                             error_message: Some(error_message),
                         };
-                        self.send_control_message(routes::AUTH_RESPONSE, &auth_response).await?;
+                        self.send_control_message(session_id, routes::AUTH_RESPONSE, &auth_response).await?;
 
-                        // Transition back to Closed (reject connection)
-                        self.state.transition_to(ConnectionState::Closed)
-                            .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
+                        // Transition back to Closed (reject connection) and remove session
+                        self.sessions.remove(&session_id);
+                        tracing::info!(session = %session_id, "Session removed after auth failure");
                     }
                 }
             }
             Err(e) => {
-                tracing::error!(error = %e, "Auth provider error");
+                tracing::error!(session = %session_id, error = %e, "Auth provider error");
 
                 // Send failure response
                 let auth_response = AuthResponse {
@@ -589,11 +744,11 @@ impl Server {
                     session_id: None,
                     error_message: Some(format!("Authentication error: {}", e)),
                 };
-                self.send_control_message(routes::AUTH_RESPONSE, &auth_response).await?;
+                self.send_control_message(session_id, routes::AUTH_RESPONSE, &auth_response).await?;
 
-                // Transition back to Closed
-                self.state.transition_to(ConnectionState::Closed)
-                    .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
+                // Remove session after auth error
+                self.sessions.remove(&session_id);
+                tracing::info!(session = %session_id, "Session removed after auth error");
             }
         }
 
@@ -601,39 +756,45 @@ impl Server {
     }
 
     /// Handles DISCONNECT message from client
-    async fn handle_disconnect(&mut self, envelope: Envelope) -> Result<(), ServerError> {
+    async fn handle_disconnect(&mut self, session_id: SessionId, envelope: Envelope) -> Result<(), ServerError> {
         let disconnect: Disconnect = self.control_codec.decode(&envelope.payload)
             .map_err(|e| ServerError::InvalidMessage(format!("Failed to parse DISCONNECT: {}", e)))?;
 
         tracing::info!(
+            session = %session_id,
             reason = ?disconnect.reason,
             message = %disconnect.message,
             "DISCONNECT received from client"
         );
 
-        // Transition to Closed state
-        self.state.transition_to(ConnectionState::Closed)
-            .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
+        // Remove session from HashMap
+        if let Some(session_state) = self.sessions.remove(&session_id) {
+            tracing::debug!(
+                session = %session_id,
+                final_state = ?session_state.state,
+                "Session removed after client disconnect"
+            );
+        }
 
         Ok(())
     }
 
     /// Handles PING message from client
-    async fn handle_ping(&mut self, envelope: Envelope) -> Result<(), ServerError> {
+    async fn handle_ping(&mut self, session_id: SessionId, envelope: Envelope) -> Result<(), ServerError> {
         let ping: Ping = self.control_codec.decode(&envelope.payload)
             .map_err(|e| ServerError::InvalidMessage(format!("Failed to parse PING: {}", e)))?;
 
-        tracing::debug!(timestamp = ping.timestamp, "PING received, sending PONG");
+        tracing::debug!(session = %session_id, timestamp = ping.timestamp, "PING received, sending PONG");
 
         // Send PONG with the same timestamp
         let pong = Pong { timestamp: ping.timestamp };
-        self.send_control_message(routes::PONG, &pong).await?;
+        self.send_control_message(session_id, routes::PONG, &pong).await?;
 
         Ok(())
     }
 
     /// Handles PONG message from client
-    async fn handle_pong(&mut self, envelope: Envelope) -> Result<(), ServerError> {
+    async fn handle_pong(&mut self, session_id: SessionId, envelope: Envelope) -> Result<(), ServerError> {
         let pong: Pong = self.control_codec.decode(&envelope.payload)
             .map_err(|e| ServerError::InvalidMessage(format!("Failed to parse PONG: {}", e)))?;
 
@@ -642,16 +803,22 @@ impl Server {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        let rtt = now.saturating_sub(pong.timestamp);
+        let rtt_ms = now.saturating_sub(pong.timestamp);
 
-        tracing::debug!(timestamp = pong.timestamp, rtt_ms = rtt, "PONG received");
+        // Store RTT for this session
+        if let Some(session_state) = self.sessions.get_mut(&session_id) {
+            session_state.last_rtt = Some(Duration::from_millis(rtt_ms));
+        }
+
+        tracing::debug!(session = %session_id, timestamp = pong.timestamp, rtt_ms, "PONG received");
 
         Ok(())
     }
 
-    /// Sends a control message to the client
+    /// Sends a control message to a specific client
     async fn send_control_message<T: serde::Serialize>(
         &mut self,
+        session_id: SessionId,
         route_id: u16,
         message: &T,
     ) -> Result<(), ServerError> {
@@ -667,10 +834,6 @@ impl Server {
             EnvelopeFlags::RELIABLE,
             payload_bytes,
         );
-
-        // Get the current session ID
-        let session_id = self.current_session_id
-            .ok_or_else(|| ServerError::InvalidMessage("No session ID set".to_string()))?;
 
         let session_envelope = SessionEnvelope::new(session_id, envelope);
         self.outgoing_tx
@@ -732,18 +895,23 @@ impl Server {
         session_id: SessionId,
         message: T,
     ) -> Result<(), ServerError> {
-        // Serialize message using game codec
-        let payload_bytes = self.game_codec.encode(&message)
+        // Get session state for codec and msg_id
+        let session_state = self.sessions.get_mut(&session_id)
+            .ok_or_else(|| ServerError::InvalidMessage(format!("Session not found: {}", session_id)))?;
+
+        // Serialize message using this session's game codec
+        let payload_bytes = session_state.game_codec.encode(&message)
             .map_err(|e| ServerError::CodecError(format!("Failed to serialize game message: {}", e)))?;
 
-        // Get current msg_id and increment counter
-        let msg_id = self.msg_id_counter;
-        self.msg_id_counter = self.msg_id_counter.wrapping_add(1);
+        // Get current msg_id and increment counter for this session
+        let msg_id = session_state.msg_id_counter;
+        let codec_id = session_state.game_codec.id();
+        session_state.msg_id_counter = session_state.msg_id_counter.wrapping_add(1);
 
         // Create envelope with automatic route_id and schema_hash from trait
         let envelope = Envelope::new_simple(
             CURRENT_PROTOCOL_VERSION,
-            self.game_codec.id(),
+            codec_id,
             T::SCHEMA_HASH,  // Automatic from GameMessage trait
             T::ROUTE_ID,     // Automatic from GameMessage trait
             msg_id,
