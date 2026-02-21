@@ -21,8 +21,14 @@
 pub mod transport;
 
 use godot_netlink_protocol::{
-    messages::{routes, AuthRequest, AuthResponse, Disconnect, DisconnectReason, Hello, HelloError, HelloOk, Ping, Pong, GAME_MESSAGES_START},
-    CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
+    compression::{Compressor, NoCompressor},
+    encryption::{Encryptor, NoEncryptor},
+    messages::{
+        routes, AuthRequest, AuthResponse, Disconnect, DisconnectReason, Hello, HelloError,
+        HelloOk, Ping, Pong, GAME_MESSAGES_START,
+    },
+    CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, CURRENT_PROTOCOL_VERSION,
+    MIN_PROTOCOL_VERSION,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -54,7 +60,15 @@ impl Default for ClientConfig {
 ///
 /// The client sends envelopes through the outgoing channel and receives
 /// responses through the incoming channel.
-pub struct Client {
+///
+/// Generic parameters:
+/// - `C`: Compressor type (NoCompressor, ZstdCompressor, Lz4Compressor)
+/// - `E`: Encryptor type (NoEncryptor, ChaCha20Poly1305Encryptor)
+pub struct Client<C = NoCompressor, E = NoEncryptor>
+where
+    C: Compressor,
+    E: Encryptor,
+{
     /// Channel to receive envelopes from transport layer
     incoming_rx: mpsc::Receiver<Envelope>,
 
@@ -87,49 +101,61 @@ pub struct Client {
 
     /// Optional message registry for schema validation
     message_registry: Option<MessageRegistry>,
+
+    /// Compressor for game messages (zero-cost via generics)
+    compressor: C,
+
+    /// Encryptor for game messages (zero-cost via generics)
+    encryptor: E,
 }
 
-impl Client {
+// Default implementation (no compression, no encryption)
+impl Client<NoCompressor, NoEncryptor> {
     /// Creates a new client with the given channels and default codecs
     ///
     /// Uses JSON codec (ID=1) for both control and game messages.
-    pub fn new(
-        incoming_rx: mpsc::Receiver<Envelope>,
-        outgoing_tx: mpsc::Sender<Envelope>,
-    ) -> Self {
-        Self::with_codec_ids(
+    /// No compression or encryption.
+    pub fn new(incoming_rx: mpsc::Receiver<Envelope>, outgoing_tx: mpsc::Sender<Envelope>) -> Self {
+        Self::with_compression_encryption(
             incoming_rx,
             outgoing_tx,
             1, // JSON for control messages
             1, // JSON for game messages
+            NoCompressor,
+            NoEncryptor,
         )
     }
+}
 
-    /// Creates a new client with custom codec IDs
-    ///
-    /// # Arguments
-    ///
-    /// * `incoming_rx` - Channel to receive envelopes from transport
-    /// * `outgoing_tx` - Channel to send envelopes to transport
-    /// * `control_codec_id` - Codec ID for control messages (typically 1=JSON)
-    /// * `game_codec_id` - Codec ID for game messages (1=JSON, 2=Postcard, 3=Raw)
-    pub fn with_codec_ids(
+// Generic implementation for all compressor/encryptor combinations
+impl<C, E> Client<C, E>
+where
+    C: Compressor,
+    E: Encryptor,
+{
+    /// Creates a new client with custom compressor and encryptor
+    pub fn with_compression_encryption(
         incoming_rx: mpsc::Receiver<Envelope>,
         outgoing_tx: mpsc::Sender<Envelope>,
         control_codec_id: u8,
         game_codec_id: u8,
+        compressor: C,
+        encryptor: E,
     ) -> Self {
         let control_codec = CodecType::from_id(control_codec_id)
             .unwrap_or_else(|_| panic!("Invalid control codec ID: {}", control_codec_id));
         let game_codec = CodecType::from_id(game_codec_id)
             .unwrap_or_else(|_| panic!("Invalid game codec ID: {}", game_codec_id));
 
-        Self::with_config(
+        Self::with_full_config(
             incoming_rx,
             outgoing_tx,
             control_codec,
             game_codec,
             ClientConfig::default(),
+            None,
+            compressor,
+            encryptor,
         )
     }
 
@@ -142,26 +168,9 @@ impl Client {
     /// * `control_codec` - Codec for control messages (typically JSON)
     /// * `game_codec` - Codec for game messages (JSON, Postcard, or Raw)
     /// * `config` - Client configuration (timeouts, intervals)
-    pub fn with_config(
-        incoming_rx: mpsc::Receiver<Envelope>,
-        outgoing_tx: mpsc::Sender<Envelope>,
-        control_codec: CodecType,
-        game_codec: CodecType,
-        config: ClientConfig,
-    ) -> Self {
-        Self::with_full_config(incoming_rx, outgoing_tx, control_codec, game_codec, config, None)
-    }
-
-    /// Creates a new client with message registry for schema validation
-    ///
-    /// # Arguments
-    ///
-    /// * `incoming_rx` - Channel to receive envelopes from transport
-    /// * `outgoing_tx` - Channel to send envelopes to transport
-    /// * `control_codec` - Codec for control messages (typically JSON)
-    /// * `game_codec` - Codec for game messages (JSON, Postcard, or Raw)
-    /// * `config` - Client configuration (timeouts, intervals)
     /// * `message_registry` - Optional message registry for schema validation
+    /// * `compressor` - Compressor instance (NoCompressor, ZstdCompressor, etc.)
+    /// * `encryptor` - Encryptor instance (NoEncryptor, ChaCha20Poly1305Encryptor, etc.)
     pub fn with_full_config(
         incoming_rx: mpsc::Receiver<Envelope>,
         outgoing_tx: mpsc::Sender<Envelope>,
@@ -169,8 +178,11 @@ impl Client {
         game_codec: CodecType,
         config: ClientConfig,
         message_registry: Option<MessageRegistry>,
+        compressor: C,
+        encryptor: E,
     ) -> Self {
         let now = Instant::now();
+
         Self {
             incoming_rx,
             outgoing_tx,
@@ -183,6 +195,8 @@ impl Client {
             last_rtt: None,
             config,
             message_registry,
+            compressor,
+            encryptor,
         }
     }
 
@@ -191,11 +205,13 @@ impl Client {
         tracing::info!("Sending HELLO");
 
         // Transition from Closed to Connecting
-        self.state.transition_to(ConnectionState::Connecting)
+        self.state
+            .transition_to(ConnectionState::Connecting)
             .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
 
         // Calculate schema hash from message registry (or 0 if not set)
-        let schema_hash = self.message_registry
+        let schema_hash = self
+            .message_registry
             .as_ref()
             .map(|r| r.global_schema_hash())
             .unwrap_or(0);
@@ -210,21 +226,28 @@ impl Client {
         self.send_control_message(routes::HELLO, &hello).await?;
 
         // Transition from Connecting to HelloSent
-        self.state.transition_to(ConnectionState::HelloSent)
+        self.state
+            .transition_to(ConnectionState::HelloSent)
             .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
 
         Ok(())
     }
 
     /// Gracefully disconnects from the server
-    pub async fn disconnect(&mut self, reason: DisconnectReason, message: String) -> Result<(), ClientError> {
+    pub async fn disconnect(
+        &mut self,
+        reason: DisconnectReason,
+        message: String,
+    ) -> Result<(), ClientError> {
         tracing::info!(reason = ?reason, message = %message, "Disconnecting");
 
         let disconnect = Disconnect { reason, message };
-        self.send_control_message(routes::DISCONNECT, &disconnect).await?;
+        self.send_control_message(routes::DISCONNECT, &disconnect)
+            .await?;
 
         // Transition to Closed state
-        self.state.transition_to(ConnectionState::Closed)
+        self.state
+            .transition_to(ConnectionState::Closed)
             .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
 
         Ok(())
@@ -262,12 +285,17 @@ impl Client {
     /// - Not in Connected state
     /// - Failed to send AUTH_REQUEST
     /// - Server rejected authentication
-    pub async fn authenticate(&mut self, method: &str, credentials: &[u8]) -> Result<(), ClientError> {
+    pub async fn authenticate(
+        &mut self,
+        method: &str,
+        credentials: &[u8],
+    ) -> Result<(), ClientError> {
         // Authentication only allowed in Connected state
         if !self.state.is_connected() {
-            return Err(ClientError::InvalidStateTransition(
-                format!("Cannot authenticate in state: {}", self.state)
-            ));
+            return Err(ClientError::InvalidStateTransition(format!(
+                "Cannot authenticate in state: {}",
+                self.state
+            )));
         }
 
         tracing::info!(method = %method, "Sending AUTH_REQUEST");
@@ -278,10 +306,12 @@ impl Client {
             credentials: credentials.to_vec(),
         };
 
-        self.send_control_message(routes::AUTH_REQUEST, &auth_request).await?;
+        self.send_control_message(routes::AUTH_REQUEST, &auth_request)
+            .await?;
 
         // Transition to AuthPending state
-        self.state.transition_to(ConnectionState::AuthPending)
+        self.state
+            .transition_to(ConnectionState::AuthPending)
             .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
 
         tracing::debug!("Waiting for AUTH_RESPONSE");
@@ -326,10 +356,11 @@ impl Client {
 
         // Check HELLO timeout
         if self.state == ConnectionState::HelloSent
-            && now.duration_since(self.last_received) > self.config.hello_timeout {
-                tracing::error!("HELLO handshake timeout");
-                return Err(ClientError::HelloTimeout);
-            }
+            && now.duration_since(self.last_received) > self.config.hello_timeout
+        {
+            tracing::error!("HELLO handshake timeout");
+            return Err(ClientError::HelloTimeout);
+        }
 
         // Check connection timeout (only when connected)
         if self.state.is_connected() {
@@ -406,7 +437,9 @@ impl Client {
 
     /// Handles HELLO_OK message from server
     async fn handle_hello_ok(&mut self, envelope: Envelope) -> Result<(), ClientError> {
-        let hello_ok: HelloOk = self.control_codec.decode(&envelope.payload)
+        let hello_ok: HelloOk = self
+            .control_codec
+            .decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse HELLO_OK: {}", e)))?;
 
         tracing::info!(
@@ -415,7 +448,8 @@ impl Client {
         );
 
         // Transition to Connected state
-        self.state.transition_to(ConnectionState::Connected)
+        self.state
+            .transition_to(ConnectionState::Connected)
             .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
         tracing::info!("Connection established");
 
@@ -424,8 +458,10 @@ impl Client {
 
     /// Handles HELLO_ERROR message from server
     async fn handle_hello_error(&mut self, envelope: Envelope) -> Result<(), ClientError> {
-        let hello_error: HelloError = self.control_codec.decode(&envelope.payload)
-            .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse HELLO_ERROR: {}", e)))?;
+        let hello_error: HelloError =
+            self.control_codec.decode(&envelope.payload).map_err(|e| {
+                ClientError::InvalidMessage(format!("Failed to parse HELLO_ERROR: {}", e))
+            })?;
 
         tracing::error!(
             reason = ?hello_error.reason,
@@ -439,8 +475,9 @@ impl Client {
 
     /// Handles DISCONNECT message from server
     async fn handle_disconnect(&mut self, envelope: Envelope) -> Result<(), ClientError> {
-        let disconnect: Disconnect = self.control_codec.decode(&envelope.payload)
-            .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse DISCONNECT: {}", e)))?;
+        let disconnect: Disconnect = self.control_codec.decode(&envelope.payload).map_err(|e| {
+            ClientError::InvalidMessage(format!("Failed to parse DISCONNECT: {}", e))
+        })?;
 
         tracing::info!(
             reason = ?disconnect.reason,
@@ -449,7 +486,8 @@ impl Client {
         );
 
         // Transition to Closed state
-        self.state.transition_to(ConnectionState::Closed)
+        self.state
+            .transition_to(ConnectionState::Closed)
             .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
 
         Ok(())
@@ -464,8 +502,10 @@ impl Client {
         }
 
         // Parse AUTH_RESPONSE
-        let auth_response: AuthResponse = self.control_codec.decode(&envelope.payload)
-            .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse AUTH_RESPONSE: {}", e)))?;
+        let auth_response: AuthResponse =
+            self.control_codec.decode(&envelope.payload).map_err(|e| {
+                ClientError::InvalidMessage(format!("Failed to parse AUTH_RESPONSE: {}", e))
+            })?;
 
         if auth_response.success {
             tracing::info!(
@@ -474,7 +514,8 @@ impl Client {
             );
 
             // Transition to Authorized state
-            self.state.transition_to(ConnectionState::Authorized)
+            self.state
+                .transition_to(ConnectionState::Authorized)
                 .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
         } else {
             tracing::warn!(
@@ -483,11 +524,14 @@ impl Client {
             );
 
             // Transition to Closed state
-            self.state.transition_to(ConnectionState::Closed)
+            self.state
+                .transition_to(ConnectionState::Closed)
                 .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
 
             return Err(ClientError::AuthenticationFailed(
-                auth_response.error_message.unwrap_or_else(|| "Unknown error".to_string())
+                auth_response
+                    .error_message
+                    .unwrap_or_else(|| "Unknown error".to_string()),
             ));
         }
 
@@ -496,13 +540,17 @@ impl Client {
 
     /// Handles PING message from server
     async fn handle_ping(&mut self, envelope: Envelope) -> Result<(), ClientError> {
-        let ping: Ping = self.control_codec.decode(&envelope.payload)
+        let ping: Ping = self
+            .control_codec
+            .decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse PING: {}", e)))?;
 
         tracing::debug!(timestamp = ping.timestamp, "PING received, sending PONG");
 
         // Send PONG with the same timestamp
-        let pong = Pong { timestamp: ping.timestamp };
+        let pong = Pong {
+            timestamp: ping.timestamp,
+        };
         self.send_control_message(routes::PONG, &pong).await?;
 
         Ok(())
@@ -510,7 +558,9 @@ impl Client {
 
     /// Handles PONG message from server
     async fn handle_pong(&mut self, envelope: Envelope) -> Result<(), ClientError> {
-        let pong: Pong = self.control_codec.decode(&envelope.payload)
+        let pong: Pong = self
+            .control_codec
+            .decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse PONG: {}", e)))?;
 
         // Calculate round-trip time
@@ -534,7 +584,9 @@ impl Client {
         route_id: u16,
         message: &T,
     ) -> Result<(), ClientError> {
-        let payload_bytes = self.control_codec.encode(message)
+        let payload_bytes = self
+            .control_codec
+            .encode(message)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to serialize: {}", e)))?;
 
         let envelope = Envelope::new_simple(
@@ -622,8 +674,30 @@ impl Client {
         message: T,
     ) -> Result<(), ClientError> {
         // Serialize message using game codec
-        let payload_bytes = self.game_codec.encode(&message)
-            .map_err(|e| ClientError::CodecError(format!("Failed to serialize game message: {}", e)))?;
+        let payload_bytes = self.game_codec.encode(&message).map_err(|e| {
+            ClientError::CodecError(format!("Failed to serialize game message: {}", e))
+        })?;
+
+        // Apply compression (zero-cost: NoCompressor inlines to no-op)
+        let payload_bytes = self.compressor.compress(&payload_bytes).map_err(|e| {
+            ClientError::CompressionError(format!("Failed to compress payload: {}", e))
+        })?;
+
+        // Apply encryption (zero-cost: NoEncryptor inlines to no-op)
+        let payload_bytes = self.encryptor.encrypt(&payload_bytes).map_err(|e| {
+            ClientError::EncryptionError(format!("Failed to encrypt payload: {}", e))
+        })?;
+
+        // Set flags based on actual types (const-folded by compiler)
+        let mut flags = EnvelopeFlags::RELIABLE;
+        use godot_netlink_protocol::compression::CompressionType;
+        use godot_netlink_protocol::encryption::EncryptionType;
+        if !matches!(self.compressor.compression_type(), CompressionType::None) {
+            flags |= EnvelopeFlags::COMPRESSED;
+        }
+        if !matches!(self.encryptor.encryption_type(), EncryptionType::None) {
+            flags |= EnvelopeFlags::ENCRYPTED;
+        }
 
         // Get current msg_id and increment counter
         let msg_id = self.msg_id_counter;
@@ -633,10 +707,10 @@ impl Client {
         let envelope = Envelope::new_simple(
             CURRENT_PROTOCOL_VERSION,
             self.game_codec.id(),
-            T::SCHEMA_HASH,  // Automatic from GameMessage trait
-            T::ROUTE_ID,     // Automatic from GameMessage trait
+            T::SCHEMA_HASH, // Automatic from GameMessage trait
+            T::ROUTE_ID,    // Automatic from GameMessage trait
             msg_id,
-            EnvelopeFlags::RELIABLE,
+            flags, // Include COMPRESSED and ENCRYPTED flags if applied
             payload_bytes,
         );
 
@@ -649,6 +723,8 @@ impl Client {
             route_id = T::ROUTE_ID,
             schema_hash = format!("{:#018x}", T::SCHEMA_HASH),
             msg_id,
+            compressed = flags.contains(EnvelopeFlags::COMPRESSED),
+            encrypted = flags.contains(EnvelopeFlags::ENCRYPTED),
             "Sent game message"
         );
 
@@ -679,6 +755,18 @@ pub enum ClientError {
 
     #[error("Authentication failed: {0}")]
     AuthenticationFailed(String),
+
+    #[error("Compression error: {0}")]
+    CompressionError(String),
+
+    #[error("Encryption error: {0}")]
+    EncryptionError(String),
+
+    #[error("Decompression error: {0}")]
+    DecompressionError(String),
+
+    #[error("Decryption error: {0}")]
+    DecryptionError(String),
 }
 
 #[cfg(test)]

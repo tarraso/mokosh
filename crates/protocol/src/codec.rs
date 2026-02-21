@@ -147,14 +147,14 @@ impl Codec for PostcardCodec {
 /// # Example
 ///
 /// ```
-/// use godot_netlink_protocol::codec::{Codec, RawCodec};
+/// use godot_netlink_protocol::codec::RawCodec;
 /// use bytes::Bytes;
 ///
 /// let codec = RawCodec;
 /// let data = Bytes::from_static(b"\x01\x02\x03\x04");
 ///
 /// // Raw codec passes through bytes unchanged
-/// let encoded = codec.encode(&data).unwrap();
+/// let encoded = codec.encode_raw(data.clone()).unwrap();
 /// assert_eq!(data, encoded);
 /// ```
 #[derive(Debug, Clone, Copy)]

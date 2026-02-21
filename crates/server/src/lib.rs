@@ -22,6 +22,8 @@ pub mod transport;
 
 use godot_netlink_protocol::{
     auth::AuthProvider,
+    compression::{Compressor, CompressionType, NoCompressor},
+    encryption::{Encryptor, EncryptionType, NoEncryptor},
     messages::{routes, AuthRequest, AuthResponse, Disconnect, DisconnectReason, ErrorReason, Hello, HelloError, HelloOk, Ping, Pong, GAME_MESSAGES_START},
     negotiate_version, CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, SessionEnvelope, SessionId,
     CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
@@ -141,7 +143,15 @@ impl Default for ServerConfig {
 /// The server supports multiple concurrent client connections. Each client
 /// is tracked independently in the `sessions` HashMap, with per-client state,
 /// RTT measurements, and keepalive timers.
-pub struct Server {
+///
+/// Generic parameters:
+/// - `C`: Compressor type (NoCompressor, ZstdCompressor, Lz4Compressor)
+/// - `E`: Encryptor type (NoEncryptor, ChaCha20Poly1305Encryptor)
+pub struct Server<C = NoCompressor, E = NoEncryptor>
+where
+    C: Compressor,
+    E: Encryptor,
+{
     /// Channel to receive envelopes from transport layer
     incoming_rx: mpsc::Receiver<SessionEnvelope>,
 
@@ -166,49 +176,65 @@ pub struct Server {
 
     /// Optional authentication provider
     auth_provider: Option<Arc<dyn AuthProvider>>,
+
+    /// Compressor for game messages (zero-cost via generics)
+    compressor: C,
+
+    /// Encryptor for game messages (zero-cost via generics)
+    encryptor: E,
 }
 
-impl Server {
+// Default implementation (no compression, no encryption)
+impl Server<NoCompressor, NoEncryptor> {
     /// Creates a new server with the given channels and default codecs
     ///
     /// Uses JSON codec (ID=1) for both control and game messages.
+    /// No compression or encryption.
     pub fn new(
         incoming_rx: mpsc::Receiver<SessionEnvelope>,
         outgoing_tx: mpsc::Sender<SessionEnvelope>,
     ) -> Self {
-        Self::with_codec_ids(
+        Self::with_compression_encryption(
             incoming_rx,
             outgoing_tx,
             1, // JSON for control messages
             1, // JSON for game messages (default, updated by client HELLO)
+            NoCompressor,
+            NoEncryptor,
         )
     }
+}
 
-    /// Creates a new server with custom codec IDs
-    ///
-    /// # Arguments
-    ///
-    /// * `incoming_rx` - Channel to receive session envelopes from transport
-    /// * `outgoing_tx` - Channel to send session envelopes to transport
-    /// * `control_codec_id` - Codec ID for control messages (typically 1=JSON)
-    /// * `game_codec_id` - Default codec ID for game messages (updated by client HELLO)
-    pub fn with_codec_ids(
+// Generic implementation for all compressor/encryptor combinations
+impl<C, E> Server<C, E>
+where
+    C: Compressor,
+    E: Encryptor,
+{
+    /// Creates a new server with custom compressor and encryptor
+    pub fn with_compression_encryption(
         incoming_rx: mpsc::Receiver<SessionEnvelope>,
         outgoing_tx: mpsc::Sender<SessionEnvelope>,
         control_codec_id: u8,
         game_codec_id: u8,
+        compressor: C,
+        encryptor: E,
     ) -> Self {
         let control_codec = CodecType::from_id(control_codec_id)
             .unwrap_or_else(|_| panic!("Invalid control codec ID: {}", control_codec_id));
         let game_codec = CodecType::from_id(game_codec_id)
             .unwrap_or_else(|_| panic!("Invalid game codec ID: {}", game_codec_id));
 
-        Self::with_config(
+        Self::with_full_config(
             incoming_rx,
             outgoing_tx,
             control_codec,
             game_codec,
             ServerConfig::default(),
+            None,
+            None,
+            compressor,
+            encryptor,
         )
     }
 
@@ -220,27 +246,11 @@ impl Server {
     /// * `outgoing_tx` - Channel to send session envelopes to transport
     /// * `control_codec` - Codec for control messages (typically JSON)
     /// * `game_codec` - Codec for game messages (JSON, Postcard, or Raw)
-    /// * `config` - Server configuration (timeouts, intervals)
-    pub fn with_config(
-        incoming_rx: mpsc::Receiver<SessionEnvelope>,
-        outgoing_tx: mpsc::Sender<SessionEnvelope>,
-        control_codec: CodecType,
-        game_codec: CodecType,
-        config: ServerConfig,
-    ) -> Self {
-        Self::with_full_config(incoming_rx, outgoing_tx, control_codec, game_codec, config, None)
-    }
-
-    /// Creates a new server with message registry for schema validation
-    ///
-    /// # Arguments
-    ///
-    /// * `incoming_rx` - Channel to receive session envelopes from transport
-    /// * `outgoing_tx` - Channel to send session envelopes to transport
-    /// * `control_codec` - Codec for control messages (typically JSON)
-    /// * `game_codec` - Codec for game messages (JSON, Postcard, or Raw)
-    /// * `config` - Server configuration (timeouts, intervals)
+    /// * `config` - Server configuration (timeouts, intervals, auth_required)
     /// * `message_registry` - Optional message registry for schema validation
+    /// * `auth_provider` - Optional authentication provider
+    /// * `compressor` - Compressor instance (NoCompressor, ZstdCompressor, etc.)
+    /// * `encryptor` - Encryptor instance (NoEncryptor, ChaCha20Poly1305Encryptor, etc.)
     pub fn with_full_config(
         incoming_rx: mpsc::Receiver<SessionEnvelope>,
         outgoing_tx: mpsc::Sender<SessionEnvelope>,
@@ -248,37 +258,9 @@ impl Server {
         game_codec: CodecType,
         config: ServerConfig,
         message_registry: Option<MessageRegistry>,
-    ) -> Self {
-        Self::with_auth(
-            incoming_rx,
-            outgoing_tx,
-            control_codec,
-            game_codec,
-            config,
-            message_registry,
-            None, // No auth provider by default
-        )
-    }
-
-    /// Creates a new server with full configuration including authentication
-    ///
-    /// # Arguments
-    ///
-    /// * `incoming_rx` - Channel to receive session envelopes from transport
-    /// * `outgoing_tx` - Channel to send session envelopes to transport
-    /// * `control_codec` - Codec for control messages (typically JSON)
-    /// * `game_codec` - Codec for game messages (JSON, Postcard, or Raw)
-    /// * `config` - Server configuration (timeouts, intervals, auth_required)
-    /// * `message_registry` - Optional message registry for schema validation
-    /// * `auth_provider` - Optional authentication provider
-    pub fn with_auth(
-        incoming_rx: mpsc::Receiver<SessionEnvelope>,
-        outgoing_tx: mpsc::Sender<SessionEnvelope>,
-        control_codec: CodecType,
-        game_codec: CodecType,
-        config: ServerConfig,
-        message_registry: Option<MessageRegistry>,
         auth_provider: Option<Arc<dyn AuthProvider>>,
+        compressor: C,
+        encryptor: E,
     ) -> Self {
         Self {
             incoming_rx,
@@ -289,6 +271,8 @@ impl Server {
             config,
             message_registry,
             auth_provider,
+            compressor,
+            encryptor,
         }
     }
 
@@ -1096,6 +1080,23 @@ impl Server {
         let payload_bytes = session_state.game_codec.encode(&message)
             .map_err(|e| ServerError::CodecError(format!("Failed to serialize game message: {}", e)))?;
 
+        // Apply compression (zero-cost: NoCompressor inlines to no-op)
+        let payload_bytes = self.compressor.compress(&payload_bytes)
+            .map_err(|e| ServerError::CompressionError(format!("Failed to compress payload: {}", e)))?;
+
+        // Apply encryption (zero-cost: NoEncryptor inlines to no-op)
+        let payload_bytes = self.encryptor.encrypt(&payload_bytes)
+            .map_err(|e| ServerError::EncryptionError(format!("Failed to encrypt payload: {}", e)))?;
+
+        // Set flags based on actual types (const-folded by compiler)
+        let mut flags = EnvelopeFlags::RELIABLE;
+        if !matches!(self.compressor.compression_type(), CompressionType::None) {
+            flags |= EnvelopeFlags::COMPRESSED;
+        }
+        if !matches!(self.encryptor.encryption_type(), EncryptionType::None) {
+            flags |= EnvelopeFlags::ENCRYPTED;
+        }
+
         // Get current msg_id and increment counter for this session
         let msg_id = session_state.msg_id_counter;
         let codec_id = session_state.game_codec.id();
@@ -1108,7 +1109,7 @@ impl Server {
             T::SCHEMA_HASH,  // Automatic from GameMessage trait
             T::ROUTE_ID,     // Automatic from GameMessage trait
             msg_id,
-            EnvelopeFlags::RELIABLE,
+            flags,           // Include COMPRESSED and ENCRYPTED flags if applied
             payload_bytes,
         );
 
@@ -1123,6 +1124,8 @@ impl Server {
             schema_hash = format!("{:#018x}", T::SCHEMA_HASH),
             msg_id,
             session = %session_id,
+            compressed = flags.contains(EnvelopeFlags::COMPRESSED),
+            encrypted = flags.contains(EnvelopeFlags::ENCRYPTED),
             "Sent game message"
         );
 
@@ -1150,6 +1153,18 @@ pub enum ServerError {
 
     #[error("Connection timeout - no messages received")]
     ConnectionTimeout,
+
+    #[error("Compression error: {0}")]
+    CompressionError(String),
+
+    #[error("Encryption error: {0}")]
+    EncryptionError(String),
+
+    #[error("Decompression error: {0}")]
+    DecompressionError(String),
+
+    #[error("Decryption error: {0}")]
+    DecryptionError(String),
 }
 
 #[cfg(test)]

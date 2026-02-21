@@ -53,3 +53,6 @@ tokio-tungstenite = "0.21"
 futures = "0.3"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 tracing = "0.1"
+zstd = "0.13"
+lz4 = "1.24"
+chacha20poly1305 = "0.10"

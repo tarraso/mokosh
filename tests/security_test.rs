@@ -1,6 +1,11 @@
 use bytes::Bytes;
 use godot_netlink_client::{transport::websocket::WebSocketClient, Client};
-use godot_netlink_protocol::{messages::GAME_MESSAGES_START, CodecType, Envelope, EnvelopeFlags, Transport};
+use godot_netlink_protocol::{
+    compression::NoCompressor,
+    encryption::NoEncryptor,
+    messages::GAME_MESSAGES_START,
+    CodecType, Envelope, EnvelopeFlags, Transport,
+};
 use godot_netlink_server::{transport::websocket::WebSocketServer, Server, ServerConfig};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -41,12 +46,16 @@ async fn setup_test_harness_with_config(server_config: ServerConfig) -> TestHarn
         let _ = ws_server.run(server_incoming_tx, server_outgoing_rx).await;
     });
 
-    let server = Server::with_config(
+    let server = Server::with_full_config(
         server_incoming_rx,
         server_outgoing_tx,
         CodecType::from_id(1).unwrap(), // JSON for control messages
         CodecType::from_id(1).unwrap(), // JSON for game messages
         server_config.clone(),
+        None, // message_registry
+        None, // auth_provider
+        NoCompressor,
+        NoEncryptor,
     );
     let server_loop_handle = tokio::spawn(async move {
         server.run().await;

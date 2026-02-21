@@ -39,6 +39,8 @@
 pub mod auth;
 pub mod codec;
 pub mod codec_registry;
+pub mod compression;
+pub mod encryption;
 pub mod envelope;
 pub mod error;
 pub mod message_registry;

@@ -8,6 +8,8 @@
 
 use godot_netlink_protocol::{
     auth::{AuthProvider, AuthResult, MockAuthProvider},
+    compression::NoCompressor,
+    encryption::NoEncryptor,
     messages::{AuthRequest, AuthResponse},
     CodecType,
 };
@@ -26,7 +28,7 @@ async fn test_auth_flow_success() {
 
     let auth_provider = Arc::new(MockAuthProvider);
 
-    let _server = Server::with_auth(
+    let _server = Server::with_full_config(
         server_incoming_rx,
         _server_outgoing_tx,
         CodecType::from_id(1).unwrap(), // JSON
@@ -34,6 +36,8 @@ async fn test_auth_flow_success() {
         config,
         None,
         Some(auth_provider),
+        NoCompressor,
+        NoEncryptor,
     );
 
     // Verify server was created with auth_required
