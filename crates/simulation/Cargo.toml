@@ -1,0 +1,18 @@
+[package]
+name = "godot-netlink-simulation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+godot-netlink-protocol = { path = "../protocol" }
+serde = { workspace = true }
+thiserror.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+
+[dev-dependencies]
+godot-netlink-protocol-derive = { path = "../protocol-derive" }
+serde_json.workspace = true

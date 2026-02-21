@@ -3,7 +3,9 @@ resolver = "2"
 members = [
     "crates/protocol",
     "crates/server",
-    "crates/client", "crates/protocol-derive",
+    "crates/client",
+    "crates/protocol-derive",
+    "crates/simulation",
 ]
 default-members = ["."]
 
@@ -19,6 +21,7 @@ authors = ["GodotNetLink Contributors"]
 godot-netlink-protocol = { path = "crates/protocol" }
 godot-netlink-server = { path = "crates/server" }
 godot-netlink-client = { path = "crates/client" }
+godot-netlink-simulation = { path = "crates/simulation" }
 tokio = { workspace = true }
 bytes = { workspace = true }
 tokio-tungstenite = { workspace = true }
