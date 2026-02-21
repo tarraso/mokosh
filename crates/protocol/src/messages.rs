@@ -181,6 +181,18 @@ pub enum DisconnectReason {
 
     /// Authentication failed
     AuthenticationFailed,
+
+    /// Replay attack detected (duplicate message ID)
+    ReplayAttack,
+
+    /// Rate limit exceeded
+    RateLimitExceeded,
+
+    /// Message too old (TTL expired)
+    MessageTooOld,
+
+    /// Protocol violation (generic)
+    ProtocolViolation,
 }
 
 impl std::fmt::Display for DisconnectReason {
@@ -191,6 +203,10 @@ impl std::fmt::Display for DisconnectReason {
             DisconnectReason::Timeout => write!(f, "Timeout"),
             DisconnectReason::ProtocolError => write!(f, "ProtocolError"),
             DisconnectReason::AuthenticationFailed => write!(f, "AuthenticationFailed"),
+            DisconnectReason::ReplayAttack => write!(f, "ReplayAttack"),
+            DisconnectReason::RateLimitExceeded => write!(f, "RateLimitExceeded"),
+            DisconnectReason::MessageTooOld => write!(f, "MessageTooOld"),
+            DisconnectReason::ProtocolViolation => write!(f, "ProtocolViolation"),
         }
     }
 }

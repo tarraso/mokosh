@@ -26,7 +26,7 @@ use godot_netlink_protocol::{
     negotiate_version, CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, SessionEnvelope, SessionId,
     CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -37,6 +37,7 @@ use tokio::sync::mpsc;
 /// - Connection state (Connecting, Connected, Authorized, etc.)
 /// - Timing information (last activity, last PING, RTT)
 /// - Client-specific configuration (codec preferences)
+/// - Security state (replay protection, rate limiting)
 #[derive(Debug)]
 struct SessionState {
     /// Current connection state for this client
@@ -56,11 +57,23 @@ struct SessionState {
 
     /// Message ID counter for game messages to this client
     msg_id_counter: u64,
+
+    /// Last received msg_id (for replay protection and out-of-order detection)
+    last_received_msg_id: u64,
+
+    /// Recent msg_ids within tolerance window (for out-of-order delivery support)
+    received_recent_ids: HashSet<u64>,
+
+    /// Token bucket for rate limiting (current number of available tokens)
+    rate_limit_tokens: f64,
+
+    /// Last time tokens were refilled for rate limiting
+    last_token_refill: Instant,
 }
 
 impl SessionState {
     /// Creates a new session state for a newly connected client
-    fn new(game_codec: CodecType) -> Self {
+    fn new(game_codec: CodecType, rate_limit_burst: u32) -> Self {
         let now = Instant::now();
         Self {
             state: ConnectionState::Connecting,
@@ -69,6 +82,10 @@ impl SessionState {
             last_rtt: None,
             game_codec,
             msg_id_counter: 1,
+            last_received_msg_id: 0,
+            received_recent_ids: HashSet::new(),
+            rate_limit_tokens: rate_limit_burst as f64,
+            last_token_refill: now,
         }
     }
 }
@@ -87,6 +104,18 @@ pub struct ServerConfig {
 
     /// Whether authentication is required before sending game messages
     pub auth_required: bool,
+
+    /// Tolerance window for out-of-order messages (allow messages up to N behind last_received_msg_id)
+    pub replay_tolerance_window: u64,
+
+    /// Maximum age of messages before rejection (TTL)
+    pub message_ttl: Duration,
+
+    /// Maximum messages per second allowed per client
+    pub max_messages_per_second: u32,
+
+    /// Burst capacity for rate limiting (max accumulated tokens)
+    pub rate_limit_burst: u32,
 }
 
 impl Default for ServerConfig {
@@ -96,6 +125,10 @@ impl Default for ServerConfig {
             keepalive_interval: Duration::from_secs(30),
             connection_timeout: Duration::from_secs(60),
             auth_required: false, // Backward compatible: auth is optional by default
+            replay_tolerance_window: 10, // Allow up to 10 messages out-of-order
+            message_ttl: Duration::from_secs(60), // Reject messages older than 60s
+            max_messages_per_second: 100, // 100 msg/s steady state
+            rate_limit_burst: 150, // Allow bursts up to 150 tokens
         }
     }
 }
@@ -279,7 +312,7 @@ impl Server {
             "Disconnecting client session"
         );
 
-        let disconnect = Disconnect { reason: reason.clone(), message: message.clone() };
+        let disconnect = Disconnect { reason, message: message.clone() };
         self.send_control_message(session_id, routes::DISCONNECT, &disconnect).await?;
 
         // Remove session from HashMap
@@ -456,7 +489,7 @@ impl Server {
             tracing::info!(session = %session_id, "New client session created");
             self.sessions.insert(
                 session_id,
-                SessionState::new(self.default_game_codec.clone()),
+                SessionState::new(self.default_game_codec, self.config.rate_limit_burst),
             );
         }
 
@@ -502,7 +535,167 @@ impl Server {
 
     /// Handles game messages (route_id >= 100)
     async fn handle_game_message(&mut self, session_id: SessionId, envelope: Envelope) -> Result<(), ServerError> {
-        // Get session state to check authorization
+        let session_state = self.sessions.get_mut(&session_id)
+            .ok_or_else(|| ServerError::InvalidMessage(format!("Session not found: {}", session_id)))?;
+
+        // 1. TTL check: reject messages older than message_ttl
+        let now = Instant::now();
+        let age = now.duration_since(session_state.last_received);
+        if age > self.config.message_ttl {
+            tracing::warn!(
+                session = %session_id,
+                msg_id = envelope.msg_id,
+                age_ms = age.as_millis(),
+                ttl_ms = self.config.message_ttl.as_millis(),
+                "Message too old (TTL expired)"
+            );
+
+            let disconnect = Disconnect {
+                reason: DisconnectReason::MessageTooOld,
+                message: format!("Message age {}ms exceeds TTL {}ms", age.as_millis(), self.config.message_ttl.as_millis()),
+            };
+            let disconnect_payload = self.control_codec.encode(&disconnect)
+                .map_err(|e| ServerError::CodecError(e.to_string()))?;
+            let disconnect_envelope = Envelope::new_simple(
+                CURRENT_PROTOCOL_VERSION,
+                self.control_codec.id(),
+                0,
+                routes::DISCONNECT,
+                0,
+                EnvelopeFlags::RELIABLE,
+                disconnect_payload,
+            );
+
+            let _ = self.outgoing_tx.send(SessionEnvelope::new(session_id, disconnect_envelope)).await;
+            self.sessions.remove(&session_id);
+            return Ok(());
+        }
+
+        // 2. Replay protection with tolerance window
+        let msg_id = envelope.msg_id;
+        let last_received = session_state.last_received_msg_id;
+
+        if msg_id > last_received {
+            // New message (most common case) - accept immediately
+            session_state.last_received_msg_id = msg_id;
+            session_state.received_recent_ids.insert(msg_id);
+
+        } else if msg_id >= last_received.saturating_sub(self.config.replay_tolerance_window) {
+            // Within tolerance window - check for duplicates
+            if session_state.received_recent_ids.contains(&msg_id) {
+                tracing::warn!(
+                    session = %session_id,
+                    msg_id = envelope.msg_id,
+                    last_received = last_received,
+                    "Replay attack detected: duplicate msg_id within tolerance window"
+                );
+
+                let disconnect = Disconnect {
+                    reason: DisconnectReason::ReplayAttack,
+                    message: format!("Duplicate message ID: {}", envelope.msg_id),
+                };
+                let disconnect_payload = self.control_codec.encode(&disconnect)
+                    .map_err(|e| ServerError::CodecError(e.to_string()))?;
+                let disconnect_envelope = Envelope::new_simple(
+                    CURRENT_PROTOCOL_VERSION,
+                    self.control_codec.id(),
+                    0,
+                    routes::DISCONNECT,
+                    0,
+                    EnvelopeFlags::RELIABLE,
+                    disconnect_payload,
+                );
+
+                let _ = self.outgoing_tx.send(SessionEnvelope::new(session_id, disconnect_envelope)).await;
+                self.sessions.remove(&session_id);
+                return Ok(());
+            }
+
+            // Out-of-order but not duplicate - accept
+            session_state.received_recent_ids.insert(msg_id);
+
+        } else {
+            // msg_id too old (beyond tolerance window)
+            tracing::warn!(
+                session = %session_id,
+                msg_id = envelope.msg_id,
+                last_received = last_received,
+                tolerance_window = self.config.replay_tolerance_window,
+                "Message ID too old (beyond tolerance window)"
+            );
+
+            let disconnect = Disconnect {
+                reason: DisconnectReason::ProtocolViolation,
+                message: format!("Message ID {} too old (last_received: {})", msg_id, last_received),
+            };
+            let disconnect_payload = self.control_codec.encode(&disconnect)
+                .map_err(|e| ServerError::CodecError(e.to_string()))?;
+            let disconnect_envelope = Envelope::new_simple(
+                CURRENT_PROTOCOL_VERSION,
+                self.control_codec.id(),
+                0,
+                routes::DISCONNECT,
+                0,
+                EnvelopeFlags::RELIABLE,
+                disconnect_payload,
+            );
+
+            let _ = self.outgoing_tx.send(SessionEnvelope::new(session_id, disconnect_envelope)).await;
+            self.sessions.remove(&session_id);
+            return Ok(());
+        }
+
+        // 3. Cleanup: remove msg_ids outside tolerance window
+        let min_id = session_state.last_received_msg_id.saturating_sub(self.config.replay_tolerance_window);
+        session_state.received_recent_ids.retain(|&id| id >= min_id);
+
+        // Rate limiting: check if tokens are available
+        let session_state = self.sessions.get_mut(&session_id)
+            .ok_or_else(|| ServerError::InvalidMessage(format!("Session not found: {}", session_id)))?;
+
+        // Refill tokens based on time elapsed since last refill
+        let now = Instant::now();
+        let elapsed = now.duration_since(session_state.last_token_refill).as_secs_f64();
+        let tokens_to_add = elapsed * (self.config.max_messages_per_second as f64);
+        session_state.rate_limit_tokens = (session_state.rate_limit_tokens + tokens_to_add)
+            .min(self.config.rate_limit_burst as f64);
+        session_state.last_token_refill = now;
+
+        // Check if we have at least 1 token available
+        if session_state.rate_limit_tokens < 1.0 {
+            tracing::warn!(
+                session = %session_id,
+                tokens = session_state.rate_limit_tokens,
+                "Rate limit exceeded"
+            );
+
+            // Disconnect client for rate limit violation
+            let disconnect = Disconnect {
+                reason: DisconnectReason::RateLimitExceeded,
+                message: "Too many messages per second".to_string(),
+            };
+            let disconnect_payload = self.control_codec.encode(&disconnect)
+                .map_err(|e| ServerError::CodecError(e.to_string()))?;
+            let disconnect_envelope = Envelope::new_simple(
+                CURRENT_PROTOCOL_VERSION,
+                self.control_codec.id(),
+                0,
+                routes::DISCONNECT,
+                0,
+                EnvelopeFlags::RELIABLE,
+                disconnect_payload,
+            );
+
+            let _ = self.outgoing_tx.send(SessionEnvelope::new(session_id, disconnect_envelope)).await;
+            self.sessions.remove(&session_id);
+
+            return Ok(());
+        }
+
+        // Consume 1 token for this message
+        session_state.rate_limit_tokens -= 1.0;
+
+        // Get session state to check authorization (immutable borrow)
         let session_state = self.sessions.get(&session_id)
             .ok_or_else(|| ServerError::InvalidMessage(format!("Session not found: {}", session_id)))?;
 
