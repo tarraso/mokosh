@@ -1,0 +1,26 @@
+[package]
+name = "godot-netlink-bindings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+godot = { git = "https://github.com/godot-rust/gdext", branch = "master", features = ["api-4-6"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+godot-netlink-protocol = { path = "../protocol" }
+godot-netlink-client = { path = "../client" }
+godot-netlink-server = { path = "../server" }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"

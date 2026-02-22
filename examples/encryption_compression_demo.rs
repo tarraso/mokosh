@@ -128,6 +128,7 @@ async fn test_zstd(message: GameState) -> usize {
         1, // JSON
         ZstdCompressor::new(),
         NoEncryptor,
+        None, // No game messages channel
     );
     client.send_message(message).await.unwrap();
 
@@ -149,6 +150,7 @@ async fn test_lz4(message: GameState) -> usize {
         1, // JSON
         Lz4Compressor::new(),
         NoEncryptor,
+        None, // No game messages channel
     );
     client.send_message(message).await.unwrap();
 
@@ -170,6 +172,7 @@ async fn test_encrypted(encryption_key: [u8; 32], message: GameState) -> usize {
         1, // JSON
         NoCompressor,
         ChaCha20Poly1305Encryptor::new(&encryption_key),
+        None, // No game messages channel
     );
     client.send_message(message).await.unwrap();
 
@@ -191,6 +194,7 @@ async fn test_zstd_encrypted(encryption_key: [u8; 32], message: GameState) -> us
         1, // JSON
         ZstdCompressor::new(),
         ChaCha20Poly1305Encryptor::new(&encryption_key),
+        None, // No game messages channel
     );
     client.send_message(message).await.unwrap();
 
@@ -212,6 +216,7 @@ async fn test_lz4_encrypted(encryption_key: [u8; 32], message: GameState) -> usi
         1, // JSON
         Lz4Compressor::new(),
         ChaCha20Poly1305Encryptor::new(&encryption_key),
+        None, // No game messages channel
     );
     client.send_message(message).await.unwrap();
 

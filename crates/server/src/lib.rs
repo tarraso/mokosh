@@ -434,10 +434,13 @@ where
             }
         }
 
-        // Remove timed-out sessions
+        // Remove timed-out sessions and broadcast player_left
         for session_id in sessions_to_remove {
             self.sessions.remove(&session_id);
             tracing::info!(session = %session_id, "Session removed due to timeout");
+
+            // Broadcast player_left to remaining clients
+            self.broadcast_player_left(session_id).await;
         }
 
         Ok(())
@@ -705,14 +708,21 @@ where
             return Ok(());
         }
 
-        // Echo the message back to this specific client
-        tracing::debug!(session = %session_id, route_id = envelope.route_id, "Echoing game message");
+        // Broadcast game message to all OTHER clients (not sender)
+        tracing::debug!(session = %session_id, route_id = envelope.route_id, "Broadcasting game message");
 
-        let session_envelope = SessionEnvelope::new(session_id, envelope);
-        self.outgoing_tx
-            .send(session_envelope)
-            .await
-            .map_err(|_| ServerError::ChannelSendError)?;
+        let connected_sessions: Vec<SessionId> = self.sessions
+            .iter()
+            .filter(|(id, state)| {
+                **id != session_id && (state.state.is_connected() || state.state.is_authorized())
+            })
+            .map(|(id, _)| *id)
+            .collect();
+
+        for target_session in connected_sessions {
+            let session_envelope = SessionEnvelope::new(target_session, envelope.clone());
+            let _ = self.outgoing_tx.send(session_envelope).await;
+        }
 
         Ok(())
     }
@@ -813,6 +823,23 @@ where
                     .map_err(|e| ServerError::InvalidStateTransition(e.to_string()))?;
 
                 tracing::info!(session = %session_id, "Connection established");
+
+                // Send welcome message for game demo
+                let welcome_msg = serde_json::json!({
+                    "type": "welcome",
+                    "client_id": session_id
+                });
+                let payload = bytes::Bytes::from(welcome_msg.to_string().as_bytes().to_vec());
+                let welcome_env = Envelope::new_simple(
+                    CURRENT_PROTOCOL_VERSION,
+                    session_state.game_codec.id(),
+                    0,
+                    100, // route_id for game messages
+                    1,
+                    EnvelopeFlags::RELIABLE,
+                    payload,
+                );
+                let _ = self.outgoing_tx.send(SessionEnvelope::new(session_id, welcome_env)).await;
             }
             Err(err) => {
                 tracing::error!(session = %session_id, error = %err, "Version mismatch");
@@ -953,7 +980,50 @@ where
             );
         }
 
+        // Broadcast player_left to all remaining clients
+        self.broadcast_player_left(session_id).await;
+
         Ok(())
+    }
+
+    /// Broadcast player_left message to all connected clients
+    async fn broadcast_player_left(&mut self, left_session_id: SessionId) {
+        let player_left_msg = serde_json::json!({
+            "type": "player_left",
+            "client_id": left_session_id.to_string()
+        });
+
+        let payload = bytes::Bytes::from(player_left_msg.to_string().as_bytes().to_vec());
+        let envelope = Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            1, // JSON codec
+            0,
+            100, // game messages route
+            1,
+            EnvelopeFlags::RELIABLE,
+            payload,
+        );
+
+        // Get all connected sessions
+        let connected_sessions: Vec<SessionId> = self.sessions
+            .iter()
+            .filter(|(_, state)| state.state.is_connected() || state.state.is_authorized())
+            .map(|(id, _)| *id)
+            .collect();
+
+        let notified_count = connected_sessions.len();
+
+        // Broadcast to all
+        for session_id in connected_sessions {
+            let session_envelope = SessionEnvelope::new(session_id, envelope.clone());
+            let _ = self.outgoing_tx.send(session_envelope).await;
+        }
+
+        tracing::debug!(
+            left_session = %left_session_id,
+            notified_count,
+            "Broadcasted player_left"
+        );
     }
 
     /// Handles PING message from client

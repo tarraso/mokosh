@@ -107,6 +107,9 @@ where
 
     /// Encryptor for game messages (zero-cost via generics)
     encryptor: E,
+
+    /// Optional channel to forward received game messages to application
+    game_messages_tx: Option<mpsc::Sender<Envelope>>,
 }
 
 // Default implementation (no compression, no encryption)
@@ -116,6 +119,23 @@ impl Client<NoCompressor, NoEncryptor> {
     /// Uses JSON codec (ID=1) for both control and game messages.
     /// No compression or encryption.
     pub fn new(incoming_rx: mpsc::Receiver<Envelope>, outgoing_tx: mpsc::Sender<Envelope>) -> Self {
+        Self::with_game_messages(incoming_rx, outgoing_tx, None)
+    }
+
+    /// Creates a new client with a channel for receiving game messages
+    ///
+    /// Uses JSON codec (ID=1) for both control and game messages.
+    /// No compression or encryption.
+    ///
+    /// # Arguments
+    /// * `incoming_rx` - Channel to receive envelopes from transport
+    /// * `outgoing_tx` - Channel to send envelopes to transport
+    /// * `game_messages_tx` - Optional channel to receive game messages (route_id >= 100)
+    pub fn with_game_messages(
+        incoming_rx: mpsc::Receiver<Envelope>,
+        outgoing_tx: mpsc::Sender<Envelope>,
+        game_messages_tx: Option<mpsc::Sender<Envelope>>,
+    ) -> Self {
         Self::with_compression_encryption(
             incoming_rx,
             outgoing_tx,
@@ -123,6 +143,7 @@ impl Client<NoCompressor, NoEncryptor> {
             1, // JSON for game messages
             NoCompressor,
             NoEncryptor,
+            game_messages_tx,
         )
     }
 }
@@ -141,6 +162,7 @@ where
         game_codec_id: u8,
         compressor: C,
         encryptor: E,
+        game_messages_tx: Option<mpsc::Sender<Envelope>>,
     ) -> Self {
         let control_codec = CodecType::from_id(control_codec_id)
             .unwrap_or_else(|_| panic!("Invalid control codec ID: {}", control_codec_id));
@@ -156,6 +178,7 @@ where
             None,
             compressor,
             encryptor,
+            game_messages_tx,
         )
     }
 
@@ -171,6 +194,7 @@ where
     /// * `message_registry` - Optional message registry for schema validation
     /// * `compressor` - Compressor instance (NoCompressor, ZstdCompressor, etc.)
     /// * `encryptor` - Encryptor instance (NoEncryptor, ChaCha20Poly1305Encryptor, etc.)
+    /// * `game_messages_tx` - Optional channel to receive game messages (route_id >= 100)
     pub fn with_full_config(
         incoming_rx: mpsc::Receiver<Envelope>,
         outgoing_tx: mpsc::Sender<Envelope>,
@@ -180,6 +204,7 @@ where
         message_registry: Option<MessageRegistry>,
         compressor: C,
         encryptor: E,
+        game_messages_tx: Option<mpsc::Sender<Envelope>>,
     ) -> Self {
         let now = Instant::now();
 
@@ -197,6 +222,7 @@ where
             message_registry,
             compressor,
             encryptor,
+            game_messages_tx,
         }
     }
 
@@ -432,7 +458,13 @@ where
     /// Handles game messages (route_id >= 100)
     async fn handle_game_message(&mut self, envelope: Envelope) {
         tracing::debug!(route_id = envelope.route_id, "Received game message");
-        // Application will handle this
+
+        // Forward to application if channel is configured
+        if let Some(tx) = &self.game_messages_tx {
+            if let Err(e) = tx.send(envelope).await {
+                tracing::error!(error = %e, "Failed to forward game message to application");
+            }
+        }
     }
 
     /// Handles HELLO_OK message from server

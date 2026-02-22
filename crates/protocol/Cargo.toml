@@ -16,8 +16,8 @@ serde = { workspace = true }
 serde_json.workspace = true
 postcard.workspace = true
 uuid = { workspace = true }
+chacha20poly1305.workspace = true
 zstd.workspace = true
 lz4.workspace = true
-chacha20poly1305.workspace = true
 
 [dev-dependencies]

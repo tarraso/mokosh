@@ -6,6 +6,7 @@ members = [
     "crates/client",
     "crates/protocol-derive",
     "crates/simulation",
+    "crates/godot-bindings",
 ]
 default-members = ["."]
 
