@@ -22,13 +22,13 @@
 //! cargo run --example prediction_demo
 //! ```
 
-use godot_netlink_protocol_derive::GameMessage;
-use godot_netlink_simulation::{
+use mokosh_protocol_derive::GameMessage;
+use mokosh_simulation::{
     client_predictor::ClientPredictor,
     server_simulation::ServerSimulation,
     Simulation,
 };
-use godot_netlink_protocol::SessionId;
+use mokosh_protocol::SessionId;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================

@@ -1,4 +1,4 @@
-//! Compression support for GodotNetLink protocol
+//! Compression support for Mokosh protocol
 //!
 //! This module provides compression functionality for reducing payload sizes.
 //! Supported algorithms:
@@ -8,7 +8,7 @@
 //! ## Example
 //!
 //! ```
-//! use godot_netlink_protocol::compression::{Compressor, ZstdCompressor, CompressionType};
+//! use mokosh_protocol::compression::{Compressor, ZstdCompressor, CompressionType};
 //!
 //! let compressor = ZstdCompressor::new();
 //! let data = b"Hello, Godot! This is a test message.".repeat(10);

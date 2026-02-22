@@ -8,7 +8,7 @@
 
 use super::Transport;
 use async_trait::async_trait;
-use godot_netlink_protocol::Envelope;
+use mokosh_protocol::Envelope;
 use tokio::sync::mpsc;
 
 /// In-memory client transport that communicates via channels
@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 /// # Example
 ///
 /// ```no_run
-/// use godot_netlink_client::transport::memory::MemoryTransport;
+/// use mokosh_client::transport::memory::MemoryTransport;
 /// use tokio::sync::mpsc;
 ///
 /// let (to_peer_tx, to_peer_rx) = mpsc::channel(100);
@@ -58,7 +58,7 @@ impl MemoryTransport {
     /// # Example
     ///
     /// ```
-    /// use godot_netlink_client::transport::memory::MemoryTransport;
+    /// use mokosh_client::transport::memory::MemoryTransport;
     ///
     /// let (client_transport, server_transport) = MemoryTransport::create_pair(100);
     /// ```
@@ -117,7 +117,7 @@ pub enum MemoryTransportError {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use godot_netlink_protocol::EnvelopeFlags;
+    use mokosh_protocol::EnvelopeFlags;
 
     #[tokio::test]
     async fn test_memory_transport_sends_to_peer() {

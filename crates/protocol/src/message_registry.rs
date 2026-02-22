@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```
-//! use godot_netlink_protocol::message_registry::GameMessage;
+//! use mokosh_protocol::message_registry::GameMessage;
 //! use serde::{Serialize, Deserialize};
 //!
 //! #[derive(Serialize, Deserialize)]
@@ -32,7 +32,7 @@ use serde::{de::DeserializeOwned, Serialize};
 /// # Example
 ///
 /// ```
-/// use godot_netlink_protocol::message_registry::GameMessage;
+/// use mokosh_protocol::message_registry::GameMessage;
 /// use serde::{Serialize, Deserialize};
 ///
 /// #[derive(Serialize, Deserialize)]
@@ -80,7 +80,7 @@ pub trait GameMessage: Serialize + DeserializeOwned + Send + Sync {
 /// # Example
 ///
 /// ```
-/// use godot_netlink_protocol::message_registry::calculate_global_schema_hash;
+/// use mokosh_protocol::message_registry::calculate_global_schema_hash;
 ///
 /// let hashes = vec![
 ///     0x1111_1111_1111_1111, // PlayerInput::SCHEMA_HASH
@@ -123,7 +123,7 @@ impl MessageRegistry {
     /// # Example
     ///
     /// ```
-    /// use godot_netlink_protocol::message_registry::{GameMessage, MessageRegistry};
+    /// use mokosh_protocol::message_registry::{GameMessage, MessageRegistry};
     /// use serde::{Serialize, Deserialize};
     ///
     /// #[derive(Serialize, Deserialize)]

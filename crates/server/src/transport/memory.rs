@@ -2,4 +2,4 @@
 //!
 //! Re-exports the shared MemoryTransport from the client crate.
 
-pub use godot_netlink_client::transport::memory::{MemoryTransport, MemoryTransportError};
+pub use mokosh_client::transport::memory::{MemoryTransport, MemoryTransportError};

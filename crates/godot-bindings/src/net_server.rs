@@ -1,11 +1,11 @@
 //! NetServer GDExtension class
 //!
-//! Godot-friendly wrapper around the GodotNetLink Server
+//! Godot-friendly wrapper around the Mokosh Server
 
 use godot::prelude::*;
 use godot::classes::{Node, INode};
-use godot_netlink_server::Server;
-use godot_netlink_protocol::{SessionEnvelope, SessionId};
+use mokosh_server::Server;
+use mokosh_protocol::{SessionEnvelope, SessionId};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 

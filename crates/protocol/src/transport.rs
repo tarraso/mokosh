@@ -1,6 +1,6 @@
-//! Transport layer abstraction for GodotNetLink
+//! Transport layer abstraction for Mokosh
 //!
-//! This module defines the core Transport trait that allows GodotNetLink
+//! This module defines the core Transport trait that allows Mokosh
 //! to work with different network protocols (WebSocket, TCP, QUIC, in-memory, etc.)
 //! while keeping the client and server event loops transport-agnostic.
 
@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 /// Transport layer abstraction for network communication
 ///
-/// This trait allows GodotNetLink to support multiple transport protocols
+/// This trait allows Mokosh to support multiple transport protocols
 /// (WebSocket, TCP, QUIC, in-memory channels, etc.) while keeping the
 /// event loop implementation transport-agnostic.
 ///
@@ -23,8 +23,8 @@ use tokio::sync::mpsc;
 ///
 /// ```no_run
 /// use async_trait::async_trait;
-/// use godot_netlink_protocol::transport::Transport;
-/// use godot_netlink_protocol::Envelope;
+/// use mokosh_protocol::transport::Transport;
+/// use mokosh_protocol::Envelope;
 /// use tokio::sync::mpsc;
 ///
 /// struct MyCustomTransport {

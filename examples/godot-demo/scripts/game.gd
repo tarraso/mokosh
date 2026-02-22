@@ -16,11 +16,10 @@ const PLAYER_SCENE = preload("res://scenes/player.tscn")
 
 # Network config
 const SERVER_URL = "ws://127.0.0.1:8080"
-const POSITION_SEND_INTERVAL = 0.033  # Send position ~30 times per second
+const POSITION_SEND_INTERVAL = 0.033  # Send position 30 times per second
 
 # Position throttling
 var position_send_timer := 0.0
-var last_sent_position := Vector2.ZERO
 
 # UI
 @onready var status_label := $UI/StatusLabel
@@ -59,18 +58,13 @@ func _process(delta: float) -> void:
 	# Update player count
 	player_count_label.text = "Players: %d" % players.size()
 
-	# Send our position if connected (throttled to 1 msg/sec)
+	# Send our position if connected (throttled)
 	if client and my_client_id != "" and players.has(my_client_id):
 		position_send_timer -= delta
 
 		if position_send_timer <= 0.0:
-			var player = players[my_client_id]
-			var current_pos = player.position
-
-			# Only send if position changed
-			if current_pos.distance_to(last_sent_position) > 0.1:
-				send_position()
-				last_sent_position = current_pos
+			# Send position every interval (even if not changed)
+			send_position()
 
 			# Reset timer
 			position_send_timer = POSITION_SEND_INTERVAL
@@ -124,7 +118,20 @@ func _on_client_message(message: String) -> void:
 			players.erase(left_client_id)
 		return
 
-	# Handle player updates
+	# Handle full state snapshot (1 Hz from server)
+	if data.has("type") and data["type"] == "full_state":
+		var players_array: Array = data.get("players", [])
+		for player_data in players_array:
+			var client_id: String = player_data["client_id"]
+			var x: float = player_data.get("x", 640.0)
+			var y: float = player_data.get("y", 360.0)
+
+			# Update or create other players
+			if client_id != my_client_id:
+				update_player(client_id, Vector2(x, y))
+		return
+
+	# Handle individual player position updates (30 Hz)
 	if data.has("client_id"):
 		var client_id: String = data["client_id"]
 		var x: float = data.get("x", 400.0)

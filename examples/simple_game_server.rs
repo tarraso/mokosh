@@ -5,9 +5,9 @@
 //! - Tracks player positions
 //! - Broadcasts world state to all clients
 
-use godot_netlink_server::{Server, ServerConfig};
-use godot_netlink_server::transport::websocket_server::WebSocketServer;
-use godot_netlink_protocol::{CodecType, SessionId};
+use mokosh_server::{Server, ServerConfig};
+use mokosh_server::transport::websocket_server::WebSocketServer;
+use mokosh_protocol::{CodecType, SessionId};
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;

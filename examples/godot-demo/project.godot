@@ -10,7 +10,7 @@ config_version=5
 
 [application]
 
-config/name="GodotNetLink Demo"
+config/name="Mokosh Demo"
 run/main_scene="res://scenes/game.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://icon.svg"

@@ -11,18 +11,18 @@ members = [
 default-members = ["."]
 
 [package]
-name = "godot-netlink"
+name = "mokosh"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/godot-netlink"
-authors = ["GodotNetLink Contributors"]
+repository = "https://github.com/yourusername/mokosh"
+authors = ["Mokosh Contributors"]
 
 [dependencies]
-godot-netlink-protocol = { path = "crates/protocol" }
-godot-netlink-server = { path = "crates/server" }
-godot-netlink-client = { path = "crates/client" }
-godot-netlink-simulation = { path = "crates/simulation" }
+mokosh-protocol = { path = "crates/protocol" }
+mokosh-server = { path = "crates/server" }
+mokosh-client = { path = "crates/client" }
+mokosh-simulation = { path = "crates/simulation" }
 tokio = { workspace = true }
 bytes = { workspace = true }
 tokio-tungstenite = { workspace = true }
@@ -32,7 +32,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-godot-netlink-protocol-derive = { path = "crates/protocol-derive" }
+mokosh-protocol-derive = { path = "crates/protocol-derive" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -41,8 +41,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/godot-netlink"
-authors = ["GodotNetLink Contributors"]
+repository = "https://github.com/yourusername/mokosh"
+authors = ["Mokosh Contributors"]
 
 [workspace.dependencies]
 bytes = "1.5"

@@ -1,7 +1,7 @@
-//! Simple test client using godot-netlink Client
+//! Simple test client using mokosh Client
 
-use godot_netlink_client::{Client, transport::websocket::WebSocketClient};
-use godot_netlink_protocol::Transport;
+use mokosh_client::{Client, transport::websocket::WebSocketClient};
+use mokosh_protocol::Transport;
 use tokio::sync::mpsc;
 use std::time::Duration;
 use serde_json::json;
@@ -79,13 +79,13 @@ async fn main() {
         
         // Send raw JSON as bytes
         let payload = bytes::Bytes::from(msg.to_string().as_bytes().to_vec());
-        let envelope = godot_netlink_protocol::Envelope::new_simple(
-            godot_netlink_protocol::CURRENT_PROTOCOL_VERSION,
+        let envelope = mokosh_protocol::Envelope::new_simple(
+            mokosh_protocol::CURRENT_PROTOCOL_VERSION,
             1, // JSON codec
             0, // schema_hash
             100, // route_id
             i, // msg_id
-            godot_netlink_protocol::EnvelopeFlags::RELIABLE,
+            mokosh_protocol::EnvelopeFlags::RELIABLE,
             payload,
         );
 

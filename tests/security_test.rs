@@ -1,12 +1,12 @@
 use bytes::Bytes;
-use godot_netlink_client::{transport::websocket::WebSocketClient, Client};
-use godot_netlink_protocol::{
+use mokosh_client::{transport::websocket::WebSocketClient, Client};
+use mokosh_protocol::{
     compression::NoCompressor,
     encryption::NoEncryptor,
     messages::GAME_MESSAGES_START,
     CodecType, Envelope, EnvelopeFlags, Transport,
 };
-use godot_netlink_server::{transport::websocket::WebSocketServer, Server, ServerConfig};
+use mokosh_server::{transport::websocket::WebSocketServer, Server, ServerConfig};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::mpsc;

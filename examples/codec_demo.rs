@@ -1,7 +1,7 @@
 //! Codec demonstration
 //!
 //! This example demonstrates using different codecs (JSON, Postcard, Raw)
-//! for encoding and decoding messages in the GodotNetLink protocol.
+//! for encoding and decoding messages in the Mokosh protocol.
 //!
 //! Run with:
 //! ```sh
@@ -9,7 +9,7 @@
 //! ```
 
 use bytes::Bytes;
-use godot_netlink_protocol::{
+use mokosh_protocol::{
     codec::{Codec, JsonCodec, PostcardCodec, RawCodec},
     codec_registry::{CodecRegistry, CodecType},
 };
@@ -25,7 +25,7 @@ struct PlayerInput {
 }
 
 fn main() {
-    println!("=== GodotNetLink Codec Demo ===\n");
+    println!("=== Mokosh Codec Demo ===\n");
 
     // Create test message
     let input = PlayerInput {

@@ -1,14 +1,14 @@
 //! NetClient GDExtension class
 //!
-//! Godot-friendly wrapper around the GodotNetLink Client
+//! Godot-friendly wrapper around the Mokosh Client
 
 use godot::prelude::*;
 use godot::classes::{Node, INode};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use godot_netlink_protocol::{Envelope, CodecType};
-use godot_netlink_client::{Client, transport::websocket::WebSocketClient};
-use godot_netlink_protocol::Transport;
+use mokosh_protocol::{Envelope, CodecType};
+use mokosh_client::{Client, transport::websocket::WebSocketClient};
+use mokosh_protocol::Transport;
 
 use crate::runtime::{AsyncRuntime, EventQueue};
 
@@ -233,21 +233,21 @@ impl NetClient {
     pub fn disconnect(&mut self) {
         if let Some(tx) = &self.outgoing_tx {
             // Send DISCONNECT message to server
-            let disconnect = godot_netlink_protocol::messages::Disconnect {
-                reason: godot_netlink_protocol::messages::DisconnectReason::ClientRequested,
+            let disconnect = mokosh_protocol::messages::Disconnect {
+                reason: mokosh_protocol::messages::DisconnectReason::ClientRequested,
                 message: "Client disconnecting".to_string(),
             };
 
             // Serialize disconnect message
             let payload = self.codec.encode(&disconnect).unwrap_or_default();
 
-            let disconnect_envelope = godot_netlink_protocol::Envelope::new_simple(
-                godot_netlink_protocol::CURRENT_PROTOCOL_VERSION,
+            let disconnect_envelope = mokosh_protocol::Envelope::new_simple(
+                mokosh_protocol::CURRENT_PROTOCOL_VERSION,
                 self.codec.id(),
                 0,
-                godot_netlink_protocol::messages::routes::DISCONNECT,
+                mokosh_protocol::messages::routes::DISCONNECT,
                 0,
-                godot_netlink_protocol::EnvelopeFlags::RELIABLE,
+                mokosh_protocol::EnvelopeFlags::RELIABLE,
                 payload,
             );
 
@@ -291,12 +291,12 @@ impl NetClient {
 
             // Create envelope
             let envelope = Envelope::new_simple(
-                godot_netlink_protocol::CURRENT_PROTOCOL_VERSION,
+                mokosh_protocol::CURRENT_PROTOCOL_VERSION,
                 self.codec.id(),
                 0, // schema_hash
                 100, // Default route_id for game messages
                 msg_id,
-                godot_netlink_protocol::EnvelopeFlags::RELIABLE,
+                mokosh_protocol::EnvelopeFlags::RELIABLE,
                 payload,
             );
 

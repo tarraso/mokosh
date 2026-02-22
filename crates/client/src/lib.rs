@@ -1,11 +1,11 @@
-//! # GodotNetLink Client
+//! # Mokosh Client
 //!
-//! Client-side event loop for GodotNetLink protocol.
+//! Client-side event loop for Mokosh protocol.
 //!
 //! ## Example
 //!
 //! ```no_run
-//! use godot_netlink_client::Client;
+//! use mokosh_client::Client;
 //! use tokio::sync::mpsc;
 //!
 //! #[tokio::main]
@@ -20,7 +20,7 @@
 
 pub mod transport;
 
-use godot_netlink_protocol::{
+use mokosh_protocol::{
     compression::{Compressor, NoCompressor},
     encryption::{Encryptor, NoEncryptor},
     messages::{
@@ -667,8 +667,8 @@ where
     /// # Example
     ///
     /// ```no_run
-    /// use godot_netlink_client::Client;
-    /// use godot_netlink_protocol::GameMessage;
+    /// use mokosh_client::Client;
+    /// use mokosh_protocol::GameMessage;
     /// use serde::{Serialize, Deserialize};
     /// use tokio::sync::mpsc;
     ///
@@ -701,7 +701,7 @@ where
     /// - Schema hash is automatically set from `T::SCHEMA_HASH`
     /// - Message is serialized with the correct game codec
     /// - Message ID is auto-incremented
-    pub async fn send_message<T: godot_netlink_protocol::GameMessage>(
+    pub async fn send_message<T: mokosh_protocol::GameMessage>(
         &mut self,
         message: T,
     ) -> Result<(), ClientError> {
@@ -722,8 +722,8 @@ where
 
         // Set flags based on actual types (const-folded by compiler)
         let mut flags = EnvelopeFlags::RELIABLE;
-        use godot_netlink_protocol::compression::CompressionType;
-        use godot_netlink_protocol::encryption::EncryptionType;
+        use mokosh_protocol::compression::CompressionType;
+        use mokosh_protocol::encryption::EncryptionType;
         if !matches!(self.compressor.compression_type(), CompressionType::None) {
             flags |= EnvelopeFlags::COMPRESSED;
         }
@@ -805,7 +805,7 @@ pub enum ClientError {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use godot_netlink_protocol::EnvelopeFlags;
+    use mokosh_protocol::EnvelopeFlags;
 
     #[tokio::test]
     async fn test_client_send() {

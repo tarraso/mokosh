@@ -1,4 +1,4 @@
-//! Authentication system for GodotNetLink
+//! Authentication system for Mokosh
 //!
 //! Provides the `AuthProvider` trait for implementing custom authentication
 //! mechanisms (passcode, Steam, Google OAuth, etc.) and a `MockAuthProvider`

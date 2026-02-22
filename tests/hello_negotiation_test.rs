@@ -3,9 +3,9 @@
 //! Tests the full HELLO handshake between client and server using memory transport.
 
 use bytes::Bytes;
-use godot_netlink_client::Client;
-use godot_netlink_protocol::{messages::routes, Envelope, EnvelopeFlags, SessionEnvelope, SessionId, CURRENT_PROTOCOL_VERSION};
-use godot_netlink_server::Server;
+use mokosh_client::Client;
+use mokosh_protocol::{messages::routes, Envelope, EnvelopeFlags, SessionEnvelope, SessionId, CURRENT_PROTOCOL_VERSION};
+use mokosh_server::Server;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 

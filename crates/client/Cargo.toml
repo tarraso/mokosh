@@ -1,5 +1,5 @@
 [package]
-name = "godot-netlink-client"
+name = "mokosh-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-godot-netlink-protocol = { path = "../protocol" }
+mokosh-protocol = { path = "../protocol" }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }

@@ -1,4 +1,4 @@
-//! Connection state machine for GodotNetLink protocol
+//! Connection state machine for Mokosh protocol
 //!
 //! State transitions:
 //! ```text

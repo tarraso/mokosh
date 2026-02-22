@@ -7,7 +7,7 @@
 //! - Per-client sequence tracking
 
 use crate::Simulation;
-use godot_netlink_protocol::SessionId;
+use mokosh_protocol::SessionId;
 use std::collections::HashMap;
 
 /// Per-client session tracking for input validation
@@ -34,11 +34,11 @@ impl ClientSession {
 /// # Example
 ///
 /// ```rust
-/// # use godot_netlink_simulation::{Simulation, server_simulation::ServerSimulation};
-/// # use godot_netlink_protocol::SessionId;
+/// # use mokosh_simulation::{Simulation, server_simulation::ServerSimulation};
+/// # use mokosh_protocol::SessionId;
 /// # use serde::{Serialize, Deserialize};
-/// # use godot_netlink_protocol::GameMessage;
-/// # use godot_netlink_protocol_derive::GameMessage;
+/// # use mokosh_protocol::GameMessage;
+/// # use mokosh_protocol_derive::GameMessage;
 /// #
 /// # #[derive(Clone, Serialize, Deserialize, GameMessage)]
 /// # #[route_id = 100]
@@ -140,11 +140,11 @@ impl<S: Simulation> ServerSimulation<S> {
     /// # Example
     ///
     /// ```rust
-    /// # use godot_netlink_simulation::{Simulation, server_simulation::ServerSimulation};
-    /// # use godot_netlink_protocol::SessionId;
+    /// # use mokosh_simulation::{Simulation, server_simulation::ServerSimulation};
+    /// # use mokosh_protocol::SessionId;
     /// # use serde::{Serialize, Deserialize};
-    /// # use godot_netlink_protocol::GameMessage;
-    /// # use godot_netlink_protocol_derive::GameMessage;
+    /// # use mokosh_protocol::GameMessage;
+    /// # use mokosh_protocol_derive::GameMessage;
     /// #
     /// # #[derive(Clone, Serialize, Deserialize, GameMessage)]
     /// # #[route_id = 100]
@@ -296,7 +296,7 @@ pub enum ServerSimulationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use godot_netlink_protocol_derive::GameMessage;
+    use mokosh_protocol_derive::GameMessage;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, GameMessage)]

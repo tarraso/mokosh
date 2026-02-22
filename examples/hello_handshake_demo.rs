@@ -5,9 +5,9 @@
 //! Run with: cargo run --example hello_handshake_demo
 
 use bytes::Bytes;
-use godot_netlink_client::Client;
-use godot_netlink_protocol::{Envelope, EnvelopeFlags, SessionEnvelope, SessionId, CURRENT_PROTOCOL_VERSION};
-use godot_netlink_server::Server;
+use mokosh_client::Client;
+use mokosh_protocol::{Envelope, EnvelopeFlags, SessionEnvelope, SessionId, CURRENT_PROTOCOL_VERSION};
+use mokosh_server::Server;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 

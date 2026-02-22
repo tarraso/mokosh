@@ -6,14 +6,14 @@
 //! - State transitions (Connected → AuthPending → Authorized)
 //! - Game message rejection before auth
 
-use godot_netlink_protocol::{
+use mokosh_protocol::{
     auth::{AuthProvider, AuthResult, MockAuthProvider},
     compression::NoCompressor,
     encryption::NoEncryptor,
     messages::{AuthRequest, AuthResponse},
     CodecType,
 };
-use godot_netlink_server::{Server, ServerConfig};
+use mokosh_server::{Server, ServerConfig};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 

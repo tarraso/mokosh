@@ -20,7 +20,7 @@ bitflags! {
     }
 }
 
-/// Network message envelope for GodotNetLink protocol
+/// Network message envelope for Mokosh protocol
 ///
 /// The Envelope wraps all network messages and provides:
 /// - Protocol version negotiation

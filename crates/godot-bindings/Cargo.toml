@@ -1,5 +1,5 @@
 [package]
-name = "godot-netlink-bindings"
+name = "mokosh-bindings"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,9 +15,9 @@ serde_json = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-godot-netlink-protocol = { path = "../protocol" }
-godot-netlink-client = { path = "../client" }
-godot-netlink-server = { path = "../server" }
+mokosh-protocol = { path = "../protocol" }
+mokosh-client = { path = "../client" }
+mokosh-server = { path = "../server" }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures = { workspace = true }

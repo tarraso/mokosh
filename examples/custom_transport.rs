@@ -7,9 +7,9 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use godot_netlink_client::{transport::Transport as ClientTransport, Client};
-use godot_netlink_protocol::{Envelope, EnvelopeFlags, SessionEnvelope, SessionId};
-use godot_netlink_server::{transport::Transport as ServerTransport, Server};
+use mokosh_client::{transport::Transport as ClientTransport, Client};
+use mokosh_protocol::{Envelope, EnvelopeFlags, SessionEnvelope, SessionId};
+use mokosh_server::{transport::Transport as ServerTransport, Server};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 

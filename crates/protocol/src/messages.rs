@@ -1,4 +1,4 @@
-//! Control messages for GodotNetLink protocol
+//! Control messages for Mokosh protocol
 //!
 //! Control messages (route_id < 100) handle protocol-level operations:
 //! - HELLO/HELLO_OK/HELLO_ERROR: version negotiation and connection establishment

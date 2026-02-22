@@ -1,11 +1,11 @@
-//! # GodotNetLink Server
+//! # Mokosh Server
 //!
-//! Server-side event loop for GodotNetLink protocol.
+//! Server-side event loop for Mokosh protocol.
 //!
 //! ## Example
 //!
 //! ```no_run
-//! use godot_netlink_server::Server;
+//! use mokosh_server::Server;
 //! use tokio::sync::mpsc;
 //!
 //! #[tokio::main]
@@ -20,7 +20,7 @@
 
 pub mod transport;
 
-use godot_netlink_protocol::{
+use mokosh_protocol::{
     auth::AuthProvider,
     compression::{Compressor, CompressionType, NoCompressor},
     encryption::{Encryptor, EncryptionType, NoEncryptor},
@@ -901,7 +901,7 @@ where
         // Call auth provider
         match auth_provider.authenticate(&auth_request.method, &auth_request.credentials).await {
             Ok(auth_result) => {
-                use godot_netlink_protocol::auth::AuthResult;
+                use mokosh_protocol::auth::AuthResult;
 
                 match auth_result {
                     AuthResult::Success { session_id: auth_session_id } => {
@@ -1099,8 +1099,8 @@ where
     /// # Example
     ///
     /// ```no_run
-    /// use godot_netlink_server::Server;
-    /// use godot_netlink_protocol::{GameMessage, SessionId};
+    /// use mokosh_server::Server;
+    /// use mokosh_protocol::{GameMessage, SessionId};
     /// use serde::{Serialize, Deserialize};
     /// use tokio::sync::mpsc;
     ///
@@ -1137,7 +1137,7 @@ where
     /// - Schema hash is automatically set from `T::SCHEMA_HASH`
     /// - Message is serialized with the correct game codec
     /// - Message ID is auto-incremented
-    pub async fn send_message<T: godot_netlink_protocol::GameMessage>(
+    pub async fn send_message<T: mokosh_protocol::GameMessage>(
         &mut self,
         session_id: SessionId,
         message: T,
@@ -1241,7 +1241,7 @@ pub enum ServerError {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use godot_netlink_protocol::EnvelopeFlags;
+    use mokosh_protocol::EnvelopeFlags;
 
     #[tokio::test]
     async fn test_server_echo() {

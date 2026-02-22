@@ -12,7 +12,7 @@
 //! # Usage
 //!
 //! ```
-//! use godot_netlink_protocol::codec::{Codec, JsonCodec};
+//! use mokosh_protocol::codec::{Codec, JsonCodec};
 //! use bytes::Bytes;
 //! use serde::{Serialize, Deserialize};
 //!
@@ -63,7 +63,7 @@ pub trait Codec: Send + Sync {
 /// # Example
 ///
 /// ```
-/// use godot_netlink_protocol::codec::{Codec, JsonCodec};
+/// use mokosh_protocol::codec::{Codec, JsonCodec};
 /// use serde::{Serialize, Deserialize};
 ///
 /// #[derive(Serialize, Deserialize)]
@@ -105,7 +105,7 @@ impl Codec for JsonCodec {
 /// # Example
 ///
 /// ```
-/// use godot_netlink_protocol::codec::{Codec, PostcardCodec};
+/// use mokosh_protocol::codec::{Codec, PostcardCodec};
 /// use serde::{Serialize, Deserialize};
 ///
 /// #[derive(Serialize, Deserialize)]
@@ -147,7 +147,7 @@ impl Codec for PostcardCodec {
 /// # Example
 ///
 /// ```
-/// use godot_netlink_protocol::codec::RawCodec;
+/// use mokosh_protocol::codec::RawCodec;
 /// use bytes::Bytes;
 ///
 /// let codec = RawCodec;

@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use futures::StreamExt;
-use godot_netlink_protocol::{Envelope, SessionEnvelope, SessionId};
+use mokosh_protocol::{Envelope, SessionEnvelope, SessionId};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -206,7 +206,7 @@ pub enum WebSocketServerError {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use godot_netlink_protocol::EnvelopeFlags;
+    use mokosh_protocol::EnvelopeFlags;
     use tokio_tungstenite::connect_async;
 
     #[tokio::test]

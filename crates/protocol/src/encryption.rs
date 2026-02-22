@@ -1,4 +1,4 @@
-//! Encryption support for GodotNetLink protocol
+//! Encryption support for Mokosh protocol
 //!
 //! This module provides encryption functionality for secure message transmission.
 //! Supported algorithms:
@@ -13,7 +13,7 @@
 //! ## Example
 //!
 //! ```
-//! use godot_netlink_protocol::encryption::{Encryptor, ChaCha20Poly1305Encryptor};
+//! use mokosh_protocol::encryption::{Encryptor, ChaCha20Poly1305Encryptor};
 //!
 //! // Generate a 32-byte key (in production, use secure key generation)
 //! let key = [0x42; 32];

@@ -1,6 +1,6 @@
-//! # GodotNetLink Protocol
+//! # Mokosh Protocol
 //!
-//! Core protocol definitions for GodotNetLink networking library.
+//! Core protocol definitions for Mokosh networking library.
 //!
 //! This crate provides:
 //! - `Envelope`: The wire format for all network messages
@@ -13,7 +13,7 @@
 //! ## Example
 //!
 //! ```
-//! use godot_netlink_protocol::{Envelope, EnvelopeFlags};
+//! use mokosh_protocol::{Envelope, EnvelopeFlags};
 //! use bytes::Bytes;
 //!
 //! // Create an envelope
@@ -74,7 +74,7 @@ pub type SessionId = uuid::Uuid;
 /// # Example
 ///
 /// ```
-/// use godot_netlink_protocol::{SessionEnvelope, Envelope, EnvelopeFlags};
+/// use mokosh_protocol::{SessionEnvelope, Envelope, EnvelopeFlags};
 /// use bytes::Bytes;
 /// use uuid::Uuid;
 ///

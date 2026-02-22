@@ -3,9 +3,9 @@
 //! Tests client-side prediction, server authoritative simulation,
 //! and reconciliation algorithms.
 
-use godot_netlink_protocol::SessionId;
-use godot_netlink_protocol_derive::GameMessage;
-use godot_netlink_simulation::{
+use mokosh_protocol::SessionId;
+use mokosh_protocol_derive::GameMessage;
+use mokosh_simulation::{
     client_predictor::ClientPredictor,
     server_simulation::ServerSimulation,
     Simulation,

@@ -1,12 +1,12 @@
 //! Integration tests for encryption and compression features
 
-use godot_netlink_client::Client;
-use godot_netlink_protocol::{
+use mokosh_client::Client;
+use mokosh_protocol::{
     compression::{Lz4Compressor, NoCompressor, ZstdCompressor},
     encryption::{ChaCha20Poly1305Encryptor, NoEncryptor},
     EnvelopeFlags,
 };
-use godot_netlink_protocol_derive::GameMessage;
+use mokosh_protocol_derive::GameMessage;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 

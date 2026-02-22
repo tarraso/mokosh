@@ -1,4 +1,4 @@
-//! Derive macros for godot-netlink-protocol
+//! Derive macros for mokosh-protocol
 //!
 //! This crate provides procedural macros for the GameMessage trait,
 //! automatically generating ROUTE_ID and SCHEMA_HASH from struct definitions.
@@ -17,7 +17,7 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Lit, Meta};
 ///
 /// ```ignore
 /// use serde::{Serialize, Deserialize};
-/// use godot_netlink_protocol_derive::GameMessage;
+/// use mokosh_protocol_derive::GameMessage;
 ///
 /// #[derive(Serialize, Deserialize, GameMessage)]
 /// #[route_id = 100]
@@ -45,7 +45,7 @@ pub fn derive_game_message(input: TokenStream) -> TokenStream {
     let schema_hash = calculate_schema_hash(&input);
 
     let expanded = quote! {
-        impl godot_netlink_protocol::message_registry::GameMessage for #name {
+        impl mokosh_protocol::message_registry::GameMessage for #name {
             const ROUTE_ID: u16 = #route_id;
             const SCHEMA_HASH: u64 = #schema_hash;
         }

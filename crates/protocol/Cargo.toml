@@ -1,5 +1,5 @@
 [package]
-name = "godot-netlink-protocol"
+name = "mokosh-protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

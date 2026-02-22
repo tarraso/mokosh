@@ -2,11 +2,11 @@
 //!
 //! Tests type-safe message sending/receiving and schema validation.
 
-use godot_netlink_client::Client;
-use godot_netlink_protocol::{
+use mokosh_client::Client;
+use mokosh_protocol::{
     calculate_global_schema_hash, GameMessage, MessageRegistry,
 };
-use godot_netlink_protocol_derive::GameMessage;
+use mokosh_protocol_derive::GameMessage;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 

@@ -1,7 +1,7 @@
 use bytes::Bytes;
-use godot_netlink_client::transport::websocket::WebSocketClient;
-use godot_netlink_protocol::{Envelope, EnvelopeFlags, Transport};
-use godot_netlink_server::transport::websocket::WebSocketServer;
+use mokosh_client::transport::websocket::WebSocketClient;
+use mokosh_protocol::{Envelope, EnvelopeFlags, Transport};
+use mokosh_server::transport::websocket::WebSocketServer;
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
@@ -38,7 +38,7 @@ async fn test_multiple_clients_connect_simultaneously() {
         });
 
         let client_loop_handle = tokio::spawn(async move {
-            use godot_netlink_client::Client;
+            use mokosh_client::Client;
             let client = Client::new(client_incoming_rx, client_outgoing_tx);
             client.run().await;
         });
@@ -91,7 +91,7 @@ async fn test_clients_send_messages_concurrently() {
         });
 
         let send_handle = tokio::spawn(async move {
-            use godot_netlink_client::Client;
+            use mokosh_client::Client;
             let client = Client::new(client_incoming_rx, client_outgoing_tx.clone());
 
             let client_handle = tokio::spawn(async move {
@@ -184,7 +184,7 @@ async fn test_clients_connect_and_disconnect() {
         });
 
         let client_loop_handle = tokio::spawn(async move {
-            use godot_netlink_client::Client;
+            use mokosh_client::Client;
             let client = Client::new(client_incoming_rx, _client_outgoing_tx);
             client.run().await;
         });

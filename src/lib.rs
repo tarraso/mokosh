@@ -1,4 +1,4 @@
-//! # GodotNetLink
+//! # Mokosh
 //!
 //! A networking library for Godot game engine with support for:
 //! - Custom protocol with versioning and schema validation
@@ -8,14 +8,14 @@
 //!
 //! ## Components
 //!
-//! - `godot-netlink-protocol`: Core protocol definitions and envelope format
-//! - `godot-netlink-server`: Server-side event loop and connection handling
-//! - `godot-netlink-client`: Client-side event loop and connection management
+//! - `mokosh-protocol`: Core protocol definitions and envelope format
+//! - `mokosh-server`: Server-side event loop and connection handling
+//! - `mokosh-client`: Client-side event loop and connection management
 //!
 //! ## Example
 //!
 //! See the `examples/` directory for usage examples.
 
-pub use godot_netlink_client as client;
-pub use godot_netlink_protocol as protocol;
-pub use godot_netlink_server as server;
+pub use mokosh_client as client;
+pub use mokosh_protocol as protocol;
+pub use mokosh_server as server;

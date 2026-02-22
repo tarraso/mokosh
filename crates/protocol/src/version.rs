@@ -1,4 +1,4 @@
-//! Protocol version negotiation for GodotNetLink
+//! Protocol version negotiation for Mokosh
 //!
 //! Version format: `MAJOR << 8 | MINOR`
 //! - v1.0 = 0x0100 (256)
@@ -55,7 +55,7 @@ pub fn make_version(major: u8, minor: u8) -> u16 {
 ///
 /// # Example
 /// ```
-/// use godot_netlink_protocol::version::negotiate_version;
+/// use mokosh_protocol::version::negotiate_version;
 ///
 /// // Client supports v1.0-v1.5, Server supports v1.0-v2.0
 /// let version = negotiate_version(0x0105, 0x0100, 0x0200, 0x0100).unwrap();

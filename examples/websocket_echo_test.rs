@@ -9,9 +9,9 @@
 //! RUST_LOG=debug cargo run --example websocket_echo_test
 
 use bytes::Bytes;
-use godot_netlink_client::{transport::websocket::WebSocketClient, Client};
-use godot_netlink_protocol::{Envelope, EnvelopeFlags, Transport};
-use godot_netlink_server::{transport::websocket::WebSocketServer, Server};
+use mokosh_client::{transport::websocket::WebSocketClient, Client};
+use mokosh_protocol::{Envelope, EnvelopeFlags, Transport};
+use mokosh_server::{transport::websocket::WebSocketServer, Server};
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
@@ -28,7 +28,7 @@ async fn main() {
         )
         .init();
 
-    println!("=== GodotNetLink WebSocket Echo Test ===\n");
+    println!("=== Mokosh WebSocket Echo Test ===\n");
 
     let addr: SocketAddr = "127.0.0.1:9090".parse().unwrap();
 

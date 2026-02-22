@@ -1,6 +1,6 @@
 //! Encryption and Compression demonstration
 //!
-//! This example demonstrates the encryption and compression features of GodotNetLink.
+//! This example demonstrates the encryption and compression features of Mokosh.
 //! It shows how to configure clients with different combinations of compression and encryption,
 //! and compares the resulting payload sizes.
 //!
@@ -9,12 +9,12 @@
 //! cargo run --example encryption_compression_demo
 //! ```
 
-use godot_netlink_client::Client;
-use godot_netlink_protocol::{
+use mokosh_client::Client;
+use mokosh_protocol::{
     compression::{Lz4Compressor, NoCompressor, ZstdCompressor},
     encryption::{ChaCha20Poly1305Encryptor, NoEncryptor},
 };
-use godot_netlink_protocol_derive::GameMessage;
+use mokosh_protocol_derive::GameMessage;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -51,7 +51,7 @@ impl GameState {
 
 #[tokio::main]
 async fn main() {
-    println!("=== GodotNetLink Encryption & Compression Demo ===\n");
+    println!("=== Mokosh Encryption & Compression Demo ===\n");
 
     let game_state = GameState::new();
     println!("Game State:");

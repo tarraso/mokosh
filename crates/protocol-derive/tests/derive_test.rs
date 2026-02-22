@@ -1,7 +1,7 @@
 //! Integration tests for GameMessage derive macro
 
-use godot_netlink_protocol::message_registry::GameMessage;
-use godot_netlink_protocol_derive::GameMessage;
+use mokosh_protocol::message_registry::GameMessage;
+use mokosh_protocol_derive::GameMessage;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, GameMessage)]

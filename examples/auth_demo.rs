@@ -8,13 +8,13 @@
 //! - Client authenticate() API
 //! - AUTH_REQUEST/AUTH_RESPONSE message exchange
 
-use godot_netlink_protocol::auth::{AuthProvider, MockAuthProvider};
-use godot_netlink_server::ServerConfig;
+use mokosh_protocol::auth::{AuthProvider, MockAuthProvider};
+use mokosh_server::ServerConfig;
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    println!("=== GodotNetLink Authentication Demo ===\n");
+    println!("=== Mokosh Authentication Demo ===\n");
 
     // Create MockAuthProvider
     let auth_provider = Arc::new(MockAuthProvider);

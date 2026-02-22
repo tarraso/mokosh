@@ -1,6 +1,6 @@
-use godot_netlink_client::{transport::websocket::WebSocketClient, Client};
-use godot_netlink_protocol::Transport;
-use godot_netlink_server::{transport::websocket::WebSocketServer, Server};
+use mokosh_client::{transport::websocket::WebSocketClient, Client};
+use mokosh_protocol::Transport;
+use mokosh_server::{transport::websocket::WebSocketServer, Server};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::mpsc;

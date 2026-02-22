@@ -2,7 +2,7 @@ use super::Transport;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use godot_netlink_protocol::Envelope;
+use mokosh_protocol::Envelope;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -103,7 +103,7 @@ pub enum WebSocketClientError {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use godot_netlink_protocol::EnvelopeFlags;
+    use mokosh_protocol::EnvelopeFlags;
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;

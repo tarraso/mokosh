@@ -15,13 +15,13 @@
 //! cargo run --example message_registry_demo
 //! ```
 
-use godot_netlink_client::Client;
-use godot_netlink_protocol::{
+use mokosh_client::Client;
+use mokosh_protocol::{
     calculate_global_schema_hash, codec::Codec, Envelope, EnvelopeFlags, GameMessage, MessageRegistry,
     SessionId, CURRENT_PROTOCOL_VERSION,
 };
-use godot_netlink_protocol_derive::GameMessage;
-use godot_netlink_server::Server;
+use mokosh_protocol_derive::GameMessage;
+use mokosh_server::Server;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -85,7 +85,7 @@ async fn demo_old_way() {
     };
 
     // Need to know codec, serialize manually
-    let codec = godot_netlink_protocol::codec::JsonCodec;
+    let codec = mokosh_protocol::codec::JsonCodec;
     let payload = codec.encode(&player_input).unwrap();
 
     // Manual Envelope construction - lots of parameters to remember!
@@ -245,7 +245,7 @@ async fn demo_server_type_safe() {
 #[tokio::main]
 async fn main() {
     println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║         GodotNetLink Message Registry Demo                  ║");
+    println!("║         Mokosh Message Registry Demo                  ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
 
     demo_old_way().await;

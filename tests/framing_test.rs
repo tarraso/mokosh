@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use godot_netlink_protocol::{Envelope, EnvelopeFlags, ENVELOPE_HEADER_SIZE};
+use mokosh_protocol::{Envelope, EnvelopeFlags, ENVELOPE_HEADER_SIZE};
 
 #[test]
 fn test_envelope_serialization_roundtrip() {

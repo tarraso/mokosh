@@ -2,7 +2,7 @@ pub mod memory;
 pub mod websocket;
 
 // Re-export the Transport trait from protocol
-pub use godot_netlink_protocol::Transport;
+pub use mokosh_protocol::Transport;
 
 /// Default transport type (WebSocket)
 ///

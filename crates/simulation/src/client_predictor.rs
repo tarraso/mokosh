@@ -18,10 +18,10 @@ use crate::{InputBuffer, Simulation};
 /// # Example
 ///
 /// ```rust
-/// # use godot_netlink_simulation::{Simulation, client_predictor::ClientPredictor};
+/// # use mokosh_simulation::{Simulation, client_predictor::ClientPredictor};
 /// # use serde::{Serialize, Deserialize};
-/// # use godot_netlink_protocol::GameMessage;
-/// # use godot_netlink_protocol_derive::GameMessage;
+/// # use mokosh_protocol::GameMessage;
+/// # use mokosh_protocol_derive::GameMessage;
 /// #
 /// # #[derive(Clone, Serialize, Deserialize, GameMessage)]
 /// # #[route_id = 100]
@@ -166,10 +166,10 @@ impl<S: Simulation> ClientPredictor<S> {
     /// # Example
     ///
     /// ```rust
-    /// # use godot_netlink_simulation::{Simulation, client_predictor::ClientPredictor};
+    /// # use mokosh_simulation::{Simulation, client_predictor::ClientPredictor};
     /// # use serde::{Serialize, Deserialize};
-    /// # use godot_netlink_protocol::GameMessage;
-    /// # use godot_netlink_protocol_derive::GameMessage;
+    /// # use mokosh_protocol::GameMessage;
+    /// # use mokosh_protocol_derive::GameMessage;
     /// #
     /// # #[derive(Clone, Serialize, Deserialize, GameMessage)]
     /// # #[route_id = 100]
@@ -257,7 +257,7 @@ impl<S: Simulation> ClientPredictor<S> {
         // pos_diff > self.divergence_threshold
 
         // Simple byte comparison for MVP
-        use godot_netlink_protocol::CodecType;
+        use mokosh_protocol::CodecType;
         let codec = CodecType::from_id(2).unwrap(); // Postcard for compact comparison
 
         let predicted_bytes = codec.encode(predicted).unwrap();
@@ -300,7 +300,7 @@ impl<S: Simulation> ClientPredictor<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use godot_netlink_protocol_derive::GameMessage;
+    use mokosh_protocol_derive::GameMessage;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, GameMessage)]

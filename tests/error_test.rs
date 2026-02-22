@@ -1,7 +1,7 @@
 use bytes::Bytes;
-use godot_netlink_client::transport::websocket::WebSocketClient;
-use godot_netlink_protocol::{Envelope, EnvelopeFlags, Transport};
-use godot_netlink_server::transport::websocket::WebSocketServer;
+use mokosh_client::transport::websocket::WebSocketClient;
+use mokosh_protocol::{Envelope, EnvelopeFlags, Transport};
+use mokosh_server::transport::websocket::WebSocketServer;
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
@@ -107,7 +107,7 @@ async fn test_empty_payload() {
     });
 
     let client_loop_handle = tokio::spawn(async move {
-        use godot_netlink_client::Client;
+        use mokosh_client::Client;
         let client = Client::new(client_incoming_rx, client_outgoing_tx);
         client.run().await;
     });

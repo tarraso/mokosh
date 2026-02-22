@@ -1,8 +1,8 @@
-//! # GodotNetLink Simulation Layer
+//! # Mokosh Simulation Layer
 //!
 //! Client-side prediction with server reconciliation for authoritative multiplayer games.
 //!
-//! This crate provides the simulation layer on top of the GodotNetLink protocol,
+//! This crate provides the simulation layer on top of the Mokosh protocol,
 //! enabling client-side prediction, server-authoritative simulation, and automatic
 //! reconciliation when predictions diverge from reality.
 //!
@@ -15,7 +15,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use godot_netlink_simulation::Simulation;
+//! use mokosh_simulation::Simulation;
 //! use serde::{Serialize, Deserialize};
 //!
 //! #[derive(Clone, Serialize, Deserialize)]
@@ -84,7 +84,7 @@ pub mod server_simulation;
 /// # Example
 ///
 /// ```rust
-/// # use godot_netlink_simulation::Simulation;
+/// # use mokosh_simulation::Simulation;
 /// # use serde::{Serialize, Deserialize};
 /// #
 /// # #[derive(Clone, Serialize, Deserialize)]
@@ -121,13 +121,13 @@ pub mod server_simulation;
 pub trait Simulation: Clone {
     /// Input message type (e.g., PlayerInput with movement/actions)
     ///
-    /// Must implement `GameMessage` from godot-netlink-protocol for network transmission.
-    type Input: godot_netlink_protocol::GameMessage;
+    /// Must implement `GameMessage` from mokosh-protocol for network transmission.
+    type Input: mokosh_protocol::GameMessage;
 
     /// State snapshot type for reconciliation
     ///
     /// Must implement `GameMessage` for network transmission and `Clone` for state comparison.
-    type State: godot_netlink_protocol::GameMessage + Clone;
+    type State: mokosh_protocol::GameMessage + Clone;
 
     /// Apply player input to the simulation
     ///

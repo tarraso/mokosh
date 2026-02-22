@@ -1,0 +1,16 @@
+[configuration]
+
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.6
+reloadable = true
+
+[libraries]
+
+macos.debug = "res://../../target/debug/libmokosh_bindings.dylib"
+macos.release = "res://../../target/release/libmokosh_bindings.dylib"
+windows.debug.x86_64 = "res://../../target/release/mokosh_bindings.dll"
+windows.release.x86_64 = "res://../../target/release/mokosh_bindings.dll"
+linux.debug.x86_64 = "res://../../target/release/libmokosh_bindings.so"
+linux.release.x86_64 = "res://../../target/release/libmokosh_bindings.so"
+web.wasm32.debug = "res://../../target/wasm32-unknown-unknown/debug/mokosh_bindings.wasm"
+web.wasm32.release = "res://../../target/wasm32-unknown-unknown/release/mokosh_bindings.wasm"

@@ -1,10 +1,10 @@
-# godot-netlink-protocol
+# mokosh-protocol
 
-Core protocol definitions for GodotNetLink networking library.
+Core protocol definitions for Mokosh networking library.
 
 ## Overview
 
-This crate provides the foundational protocol layer for GodotNetLink, including:
+This crate provides the foundational protocol layer for Mokosh, including:
 
 - **Envelope**: Wire format for all network messages with a fixed 34-byte header
 - **EnvelopeFlags**: Bitflags for message properties (RELIABLE, ENCRYPTED, COMPRESSED)
@@ -61,7 +61,7 @@ All multi-byte integers are encoded in big-endian format.
 ### Basic Envelope Usage
 
 ```rust
-use godot_netlink_protocol::{Envelope, EnvelopeFlags};
+use mokosh_protocol::{Envelope, EnvelopeFlags};
 use bytes::Bytes;
 
 // Create an envelope
@@ -91,7 +91,7 @@ assert!(!received.is_encrypted());
 ### Version Negotiation
 
 ```rust
-use godot_netlink_protocol::{
+use mokosh_protocol::{
     negotiate_version,
     CURRENT_PROTOCOL_VERSION,
     MIN_PROTOCOL_VERSION,
@@ -111,7 +111,7 @@ assert_eq!(negotiated, 0x0105); // Use v1.5
 ### Control Messages
 
 ```rust
-use godot_netlink_protocol::{Hello, messages::routes};
+use mokosh_protocol::{Hello, messages::routes};
 
 // Client sends HELLO
 let hello = Hello {
@@ -151,7 +151,7 @@ Standard codec identifiers:
 The crate includes comprehensive tests:
 
 ```bash
-cargo test --package godot-netlink-protocol
+cargo test --package mokosh-protocol
 ```
 
 Tests cover:

@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```
-//! use godot_netlink_protocol::codec_registry::CodecRegistry;
+//! use mokosh_protocol::codec_registry::CodecRegistry;
 //!
 //! // Use the default registry
 //! let registry = CodecRegistry::default();

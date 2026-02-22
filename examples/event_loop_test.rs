@@ -6,15 +6,15 @@
 //! Run with: cargo run --example event_loop_test
 
 use bytes::Bytes;
-use godot_netlink_client::Client;
-use godot_netlink_protocol::{Envelope, EnvelopeFlags, SessionEnvelope, SessionId};
-use godot_netlink_server::Server;
+use mokosh_client::Client;
+use mokosh_protocol::{Envelope, EnvelopeFlags, SessionEnvelope, SessionId};
+use mokosh_server::Server;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
 #[tokio::main]
 async fn main() {
-    println!("=== GodotNetLink Event Loop Test ===\n");
+    println!("=== Mokosh Event Loop Test ===\n");
 
     // Create channels for server (uses SessionEnvelope)
     let (server_incoming_tx, server_incoming_rx) = mpsc::channel(100);

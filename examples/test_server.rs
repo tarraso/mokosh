@@ -2,7 +2,7 @@
 //!
 //! Now with automatic welcome messages and position broadcast!
 
-use godot_netlink_server::{Server, transport::websocket::WebSocketServer};
+use mokosh_server::{Server, transport::websocket::WebSocketServer};
 use tokio::sync::mpsc;
 use std::net::SocketAddr;
 
