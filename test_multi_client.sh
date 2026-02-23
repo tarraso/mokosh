@@ -7,6 +7,7 @@ set -e
 
 PROJECT_DIR="/Users/taras/projects/gdrust/godot-netlink"
 GODOT_PROJECT="$PROJECT_DIR/examples/godot-demo"
+GODOT_BIN="/Applications/Godot.app/Contents/MacOS/Godot"
 TEST_DURATION=10
 
 echo "🧪 Multi-client test starting..."
@@ -26,7 +27,7 @@ cleanup() {
     fi
 
     # Kill all Godot processes from this test
-    pkill -f "godot.*$GODOT_PROJECT" 2>/dev/null || true
+    pkill -f "Godot.*$GODOT_PROJECT" 2>/dev/null || true
 
     # Free port 8080
     lsof -ti:8080 | xargs kill -9 2>/dev/null || true
@@ -40,7 +41,7 @@ trap cleanup EXIT INT TERM
 # Start server in background
 echo "🚀 Starting Rust server..."
 cd "$PROJECT_DIR"
-cargo run --example simple_server --quiet &
+cargo run --example test_server --quiet &
 SERVER_PID=$!
 echo "  Server PID: $SERVER_PID"
 
@@ -58,7 +59,7 @@ echo ""
 
 # Start first Godot client
 echo "🎮 Starting Client 1..."
-godot --headless --path "$GODOT_PROJECT" > /tmp/godot_client1.log 2>&1 &
+"$GODOT_BIN" --headless --path "$GODOT_PROJECT" > /tmp/godot_client1.log 2>&1 &
 CLIENT1_PID=$!
 echo "  Client 1 PID: $CLIENT1_PID"
 
@@ -66,7 +67,7 @@ sleep 1
 
 # Start second Godot client
 echo "🎮 Starting Client 2..."
-godot --headless --path "$GODOT_PROJECT" > /tmp/godot_client2.log 2>&1 &
+"$GODOT_BIN" --headless --path "$GODOT_PROJECT" > /tmp/godot_client2.log 2>&1 &
 CLIENT2_PID=$!
 echo "  Client 2 PID: $CLIENT2_PID"
 
@@ -90,7 +91,7 @@ echo "==============="
 # Check server logs (only show connection events)
 echo ""
 echo "Server events (last 20 lines):"
-ps aux | grep "simple_server" | grep -v grep | head -5
+ps aux | grep "test_server" | grep -v grep | head -5
 
 # Check if clients are still running
 if kill -0 "$CLIENT1_PID" 2>/dev/null; then
