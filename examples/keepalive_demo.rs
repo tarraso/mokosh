@@ -37,7 +37,7 @@ async fn main() {
 
     let server_transport = WebSocketServer::new(addr);
     tokio::spawn(async move {
-        if let Err(e) = server_transport.run(server_incoming_tx, server_outgoing_rx).await {
+        if let Err(e) = server_transport.run(server_incoming_tx, server_outgoing_rx, None).await {
             eprintln!("Server transport error: {}", e);
         }
     });

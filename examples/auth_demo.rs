@@ -44,8 +44,10 @@ async fn main() {
 
     // Show server configuration
     println!("\n=== Server Configuration ===");
-    let mut config = ServerConfig::default();
-    config.auth_required = true;
+    let config = ServerConfig {
+        auth_required: true,
+        ..Default::default()
+    };
     println!("  auth_required: {}", config.auth_required);
     println!("  hello_timeout: {:?}", config.hello_timeout);
     println!("  keepalive_interval: {:?}", config.keepalive_interval);

@@ -43,7 +43,7 @@ async fn setup_test_harness_with_config(server_config: ServerConfig) -> TestHarn
     let ws_server = WebSocketServer::new(bound_addr);
 
     let server_transport_handle = tokio::spawn(async move {
-        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     let server = Server::with_full_config(
@@ -215,6 +215,7 @@ async fn test_control_messages_not_replay_protected() {
     let harness = setup_test_harness_with_config(config).await;
 
     // Send a PING message (control message, route_id=30)
+    let ping = serde_json::json!({"timestamp": 1234567890}).to_string();
     let envelope = Envelope::new_simple(
         1,
         1,
@@ -222,7 +223,7 @@ async fn test_control_messages_not_replay_protected() {
         30, // PING route_id < 100
         1,
         EnvelopeFlags::RELIABLE,
-        Bytes::from("ping"),
+        Bytes::from(ping),
     );
 
     // Send the same PING multiple times (should be allowed)

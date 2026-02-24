@@ -233,7 +233,7 @@ fn main() {
     println!("\n--- Frame 3: Client applies second input (up+right, speed=10) ---");
 
     let input2 = MovementInput {
-        direction: Vec2::new(0.7071, 0.7071), // 45 degrees (normalized)
+        direction: Vec2::new(std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2), // 45 degrees (normalized)
         speed: 10.0,
     };
 
@@ -255,7 +255,7 @@ fn main() {
 
     // Server applies a slightly different input (simulating packet corruption or lag)
     let server_input2 = MovementInput {
-        direction: Vec2::new(0.7071, 0.7071),
+        direction: Vec2::new(std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2),
         speed: 8.0, // Different speed! (simulating server validation/correction)
     };
 

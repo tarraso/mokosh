@@ -23,8 +23,10 @@ async fn test_auth_flow_success() {
     let (_server_incoming_tx, server_incoming_rx) = mpsc::channel(100);
     let (_server_outgoing_tx, _server_outgoing_rx) = mpsc::channel(100);
 
-    let mut config = ServerConfig::default();
-    config.auth_required = true;
+    let config = ServerConfig {
+        auth_required: true,
+        ..Default::default()
+    };
 
     let auth_provider = Arc::new(MockAuthProvider);
 

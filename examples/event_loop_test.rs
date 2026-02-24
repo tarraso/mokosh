@@ -1,20 +1,20 @@
 //! Event loop test example
 //!
-//! This example demonstrates the basic event loop functionality by connecting
-//! a client and server through in-memory channels.
+//! This example demonstrates the event-based Server API using in-memory transport.
+//! It shows the minimal setup for a client-server communication with GameEvent handling.
 //!
 //! Run with: cargo run --example event_loop_test
 
 use bytes::Bytes;
 use mokosh_client::Client;
 use mokosh_protocol::{Envelope, EnvelopeFlags, SessionEnvelope, SessionId};
-use mokosh_server::Server;
+use mokosh_server::{Server, GameEvent};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
 #[tokio::main]
 async fn main() {
-    println!("=== Mokosh Event Loop Test ===\n");
+    println!("=== Mokosh Event Loop Test (Event-Based API) ===\n");
 
     // Create channels for server (uses SessionEnvelope)
     let (server_incoming_tx, server_incoming_rx) = mpsc::channel(100);
@@ -49,16 +49,42 @@ async fn main() {
         }
     });
 
-    // Create server
-    let server = Server::new(server_incoming_rx, server_outgoing_tx);
+    // Create server with event-based API
+    let mut server = Server::new(server_incoming_rx, server_outgoing_tx.clone());
 
     // Create client
     let client = Client::new(client_incoming_rx, client_outgoing_tx);
 
-    // Spawn server task
-    println!("Starting server...");
+    // Spawn server task with event handling
+    println!("Starting server (event-based API)...");
     let server_handle = tokio::spawn(async move {
-        server.run().await;
+        loop {
+            match server.tick().await {
+                Ok(Some(GameEvent::PlayerConnected(session_id))) => {
+                    println!("[Server] Player connected: {}", session_id);
+                }
+                Ok(Some(GameEvent::PlayerDisconnected(session_id))) => {
+                    println!("[Server] Player disconnected: {}", session_id);
+                }
+                Ok(Some(GameEvent::GameMessage { session_id, envelope })) => {
+                    println!("[Server] Game message from {}: route_id={}, payload={:?}",
+                        session_id, envelope.route_id,
+                        std::str::from_utf8(&envelope.payload).unwrap_or("<binary>"));
+
+                    // Echo back to sender (using low-level API for raw Envelope)
+                    let session_envelope = SessionEnvelope::new(session_id, envelope);
+                    let _ = server_outgoing_tx.send(session_envelope).await;
+                }
+                Ok(None) => {
+                    println!("[Server] Shutting down");
+                    break;
+                }
+                Err(e) => {
+                    println!("[Server] Error: {}", e);
+                    break;
+                }
+            }
+        }
     });
 
     // Spawn client task
@@ -94,8 +120,6 @@ async fn main() {
     sleep(Duration::from_millis(200)).await;
 
     println!("\n--- Message flow complete ---");
-    println!("The server received the message and echoed it back.");
-    println!("Check the output above for 'Server received' and 'Client received' messages.\n");
 
     // Send another message
     let test_message_2 = Envelope::new_simple(
@@ -130,8 +154,9 @@ async fn main() {
 
     println!("\n=== Test complete! ===");
     println!("\nSummary:");
-    println!("✓ Server event loop: working");
+    println!("✓ Server event loop (event-based API): working");
     println!("✓ Client event loop: working");
     println!("✓ In-memory message passing: working");
+    println!("✓ GameEvent handling (PlayerConnected, GameMessage): working");
     println!("✓ Envelope serialization/deserialization: working");
 }

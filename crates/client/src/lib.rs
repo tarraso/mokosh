@@ -195,6 +195,7 @@ where
     /// * `compressor` - Compressor instance (NoCompressor, ZstdCompressor, etc.)
     /// * `encryptor` - Encryptor instance (NoEncryptor, ChaCha20Poly1305Encryptor, etc.)
     /// * `game_messages_tx` - Optional channel to receive game messages (route_id >= 100)
+    #[allow(clippy::too_many_arguments)]
     pub fn with_full_config(
         incoming_rx: mpsc::Receiver<Envelope>,
         outgoing_tx: mpsc::Sender<Envelope>,

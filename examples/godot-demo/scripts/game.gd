@@ -97,6 +97,28 @@ func _on_client_message(message: String) -> void:
 
 	var data: Dictionary = json.data
 
+	# Handle simple_game_server format: {"players":[...]}
+	if data.has("players"):
+		var players_array: Array = data["players"]
+
+		# Initialize my_client_id if not set
+		if my_client_id == "" and players_array.size() > 0:
+			# Use first player as our client
+			my_client_id = players_array[0]["session_id"]
+			print("🎉 My client ID: ", my_client_id)
+			create_player(my_client_id, true)
+
+		# Update all players
+		for player_data in players_array:
+			var session_id: String = player_data["session_id"]
+			var x: float = player_data.get("x", 400.0)
+			var y: float = player_data.get("y", 300.0)
+
+			# Skip local player position updates (we control it)
+			if session_id != my_client_id:
+				update_player(session_id, Vector2(x, y))
+		return
+
 	# Handle welcome message
 	if data.has("type") and data["type"] == "welcome":
 		my_client_id = data["client_id"]

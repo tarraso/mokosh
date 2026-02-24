@@ -24,7 +24,7 @@ async fn main() {
     // Create and spawn WebSocket transport
     let transport = WebSocketServer::new(addr);
     tokio::spawn(async move {
-        if let Err(e) = transport.run(incoming_tx, outgoing_rx).await {
+        if let Err(e) = transport.run(incoming_tx, outgoing_rx, None).await {
             eprintln!("❌ Transport error: {}", e);
         }
     });

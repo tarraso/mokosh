@@ -36,7 +36,7 @@ async fn test_server_handles_malformed_websocket_data() {
     let ws_server = WebSocketServer::new(bound_addr);
 
     let server_handle = tokio::spawn(async move {
-        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     sleep(Duration::from_millis(200)).await;
@@ -92,7 +92,7 @@ async fn test_empty_payload() {
     let ws_server = WebSocketServer::new(bound_addr);
 
     let server_handle = tokio::spawn(async move {
-        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     sleep(Duration::from_millis(200)).await;
@@ -163,7 +163,7 @@ async fn test_channel_overflow() {
     let ws_server = WebSocketServer::new(bound_addr);
 
     let server_handle = tokio::spawn(async move {
-        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     sleep(Duration::from_millis(200)).await;
@@ -209,7 +209,7 @@ async fn test_invalid_envelope_header() {
     let ws_server = WebSocketServer::new(bound_addr);
 
     let server_handle = tokio::spawn(async move {
-        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     sleep(Duration::from_millis(200)).await;
@@ -270,7 +270,7 @@ async fn test_websocket_text_message_ignored() {
     let ws_server = WebSocketServer::new(bound_addr);
 
     let server_handle = tokio::spawn(async move {
-        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     sleep(Duration::from_millis(200)).await;

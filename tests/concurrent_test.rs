@@ -19,7 +19,7 @@ async fn test_multiple_clients_connect_simultaneously() {
     let ws_server = WebSocketServer::new(bound_addr);
 
     let server_handle = tokio::spawn(async move {
-        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     sleep(Duration::from_millis(200)).await;
@@ -71,7 +71,7 @@ async fn test_clients_send_messages_concurrently() {
     let ws_server = WebSocketServer::new(bound_addr);
 
     let server_handle = tokio::spawn(async move {
-        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     sleep(Duration::from_millis(200)).await;
@@ -168,7 +168,7 @@ async fn test_clients_connect_and_disconnect() {
     let ws_server = WebSocketServer::new(bound_addr);
 
     let server_handle = tokio::spawn(async move {
-        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     sleep(Duration::from_millis(200)).await;
@@ -213,7 +213,7 @@ async fn test_rapid_connect_disconnect() {
     let ws_server = WebSocketServer::new(bound_addr);
 
     let server_handle = tokio::spawn(async move {
-        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     sleep(Duration::from_millis(200)).await;

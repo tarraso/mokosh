@@ -23,7 +23,7 @@ async fn test_automatic_ping_pong_exchange() {
 
     let server_transport = WebSocketServer::new(bound_addr);
     let server_transport_handle = tokio::spawn(async move {
-        let _ = server_transport.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = server_transport.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     let server = Server::new(server_incoming_rx, server_outgoing_tx);
@@ -83,7 +83,7 @@ async fn test_keepalive_prevents_timeout() {
 
     let server_transport = WebSocketServer::new(bound_addr);
     let server_transport_handle = tokio::spawn(async move {
-        let _ = server_transport.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = server_transport.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     let server = Server::new(server_incoming_rx, server_outgoing_tx);
@@ -142,7 +142,7 @@ async fn test_bidirectional_keepalive() {
 
     let server_transport = WebSocketServer::new(bound_addr);
     let server_transport_handle = tokio::spawn(async move {
-        let _ = server_transport.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = server_transport.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     let server = Server::new(server_incoming_rx, server_outgoing_tx);

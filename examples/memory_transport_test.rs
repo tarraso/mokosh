@@ -1,23 +1,35 @@
-//! Memory transport example for single-player games
+//! Memory transport example for testing and single-player scenarios
 //!
 //! This example demonstrates using in-memory transport for scenarios where
-//! both client and server run in the same process (e.g., single-player games
-//! where the server logic runs locally for better performance than GDScript).
+//! both client and server run in the same process:
+//! - **Testing**: Fast, deterministic tests without network overhead
+//! - **Single-player games**: Server logic in Rust (faster than GDScript)
+//! - **Development**: Rapid iteration without network setup
+//!
+//! Benefits:
+//! - Zero network latency
+//! - No serialization overhead (direct memory channels)
+//! - Perfect for prototyping game logic
+//! - Easy to switch to WebSocket for multiplayer later
 //!
 //! Run with: cargo run --example memory_transport_test
 
 use bytes::Bytes;
 use mokosh_client::{transport::{memory::MemoryTransport, Transport}, Client};
 use mokosh_protocol::{Envelope, EnvelopeFlags, SessionEnvelope, SessionId};
-use mokosh_server::Server;
+use mokosh_server::{Server, GameEvent};
 use tokio::time::{sleep, Duration};
 use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() {
-    println!("=== Memory Transport Example (Single-Player Mode) ===\n");
-    println!("This example shows client and server communicating in the same process");
-    println!("Perfect for single-player games with local Rust server logic!\n");
+    println!("=== Memory Transport Example ===\n");
+    println!("Use case: Single-player game with local Rust server logic\n");
+    println!("Perfect for:");
+    println!("  • Testing game logic without network");
+    println!("  • Single-player games (server logic in Rust, not GDScript)");
+    println!("  • Rapid development iteration");
+    println!("  • Easy migration to WebSocket later\n");
 
     // Create a pair of connected transports - super easy!
     let (client_transport, server_transport) = MemoryTransport::create_pair(100);
@@ -26,11 +38,36 @@ async fn main() {
     let (server_incoming_tx, server_incoming_rx) = mpsc::channel(100);
     let (server_outgoing_tx, mut server_outgoing_rx) = mpsc::channel(100);
 
-    let server = Server::new(server_incoming_rx, server_outgoing_tx.clone());
+    let mut server = Server::new(server_incoming_rx, server_outgoing_tx.clone());
+    let server_outgoing_tx_clone = server_outgoing_tx.clone();
 
     println!("[Server] Starting local server event loop...");
     tokio::spawn(async move {
-        server.run().await;
+        loop {
+            match server.tick().await {
+                Ok(Some(GameEvent::PlayerConnected(session_id))) => {
+                    println!("[Server] Player connected: {}", session_id);
+                }
+                Ok(Some(GameEvent::GameMessage { session_id, envelope })) => {
+                    let payload_str = std::str::from_utf8(&envelope.payload).unwrap_or("<binary>");
+                    println!("[Server] Received: {} (route_id={})", payload_str, envelope.route_id);
+
+                    // Server processes game logic here
+                    // For demo: just echo back (using low-level API for raw Envelope)
+                    let session_envelope = SessionEnvelope::new(session_id, envelope);
+                    let _ = server_outgoing_tx_clone.send(session_envelope).await;
+                }
+                Ok(None) => {
+                    println!("[Server] Shutting down");
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("[Server] Error: {}", e);
+                    break;
+                }
+                _ => {}
+            }
+        }
     });
 
     // Create adapter for server transport
@@ -86,7 +123,7 @@ async fn main() {
     sleep(Duration::from_millis(100)).await;
 
     // Simulate game loop sending multiple commands
-    println!("=== Simulating Game Loop ===\n");
+    println!("=== Simulating Single-Player Game Loop ===\n");
 
     for i in 1..=5 {
         let command = match i {
@@ -121,10 +158,10 @@ async fn main() {
     sleep(Duration::from_millis(500)).await;
 
     println!("\n=== Benefits of Memory Transport ===");
-    println!("✓ Zero network overhead");
-    println!("✓ Perfect for single-player games");
+    println!("✓ Zero network overhead (direct memory channels)");
+    println!("✓ Perfect for single-player games with Rust server logic");
     println!("✓ Fast development and testing");
-    println!("✓ Server logic in Rust (faster than GDScript)");
+    println!("✓ Deterministic behavior (no network jitter)");
     println!("✓ Easy to switch to WebSocket for multiplayer");
     println!("\n=== Example completed ===");
 }

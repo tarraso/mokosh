@@ -4,8 +4,7 @@
 
 use godot::prelude::*;
 use godot::classes::{Node, INode};
-use mokosh_server::Server;
-use mokosh_protocol::{SessionEnvelope, SessionId};
+use mokosh_protocol::SessionEnvelope;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -13,6 +12,7 @@ use crate::runtime::{AsyncRuntime, EventQueue};
 
 /// Events emitted by the server
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Variants will be constructed when server implementation is complete
 pub enum ServerEvent {
     ClientConnected { session_id: u64 },
     ClientDisconnected { session_id: u64, reason: String },

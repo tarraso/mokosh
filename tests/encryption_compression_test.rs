@@ -29,6 +29,7 @@ async fn test_compression_only() {
         1, // JSON
         ZstdCompressor::new(),
         NoEncryptor,
+        None,
     );
 
     let message = TestMessage {
@@ -58,6 +59,7 @@ async fn test_encryption_only() {
         1, // JSON
         NoCompressor,
         ChaCha20Poly1305Encryptor::new(&encryption_key),
+        None,
     );
 
     let message = TestMessage {
@@ -87,6 +89,7 @@ async fn test_compression_and_encryption() {
         1, // JSON
         ZstdCompressor::new(),
         ChaCha20Poly1305Encryptor::new(&encryption_key),
+        None,
     );
 
     let message = TestMessage {
@@ -115,6 +118,7 @@ async fn test_lz4_compression() {
         1, // JSON
         Lz4Compressor::new(),
         NoEncryptor,
+        None,
     );
 
     let message = TestMessage {

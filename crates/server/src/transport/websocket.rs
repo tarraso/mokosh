@@ -109,12 +109,18 @@ impl WebSocketServer {
         self,
         incoming_tx: mpsc::Sender<SessionEnvelope>,
         mut outgoing_rx: mpsc::Receiver<SessionEnvelope>,
+        ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> Result<(), WebSocketServerError> {
         let listener = TcpListener::bind(self.addr)
             .await
             .map_err(|e| WebSocketServerError::BindError(e.to_string()))?;
 
         tracing::info!(addr = %self.addr, "WebSocket server listening");
+
+        // Signal that server is ready to accept connections
+        if let Some(tx) = ready_tx {
+            let _ = tx.send(());
+        }
 
         // Map of session_id -> channel sender for routing outgoing messages
         let clients: Arc<RwLock<HashMap<SessionId, mpsc::Sender<Envelope>>>> =
@@ -224,7 +230,7 @@ mod tests {
             drop(listener);
 
             let server = WebSocketServer::new(bound_addr);
-            let _ = server.run(incoming_tx, outgoing_rx).await;
+            let _ = server.run(incoming_tx, outgoing_rx, None).await;
         });
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -245,7 +251,7 @@ mod tests {
         let server = WebSocketServer::new(bound_addr);
 
         let server_handle = tokio::spawn(async move {
-            let _ = server.run(incoming_tx, outgoing_rx).await;
+            let _ = server.run(incoming_tx, outgoing_rx, None).await;
         });
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -305,7 +311,7 @@ mod tests {
         let server = WebSocketServer::new(bound_addr);
 
         let server_handle = tokio::spawn(async move {
-            let _ = server.run(incoming_tx, outgoing_rx).await;
+            let _ = server.run(incoming_tx, outgoing_rx, None).await;
         });
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -365,7 +371,7 @@ mod tests {
         let server = WebSocketServer::new(bound_addr);
 
         let server_handle = tokio::spawn(async move {
-            let _ = server.run(incoming_tx, outgoing_rx).await;
+            let _ = server.run(incoming_tx, outgoing_rx, None).await;
         });
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -427,7 +433,7 @@ mod tests {
         let server = WebSocketServer::new(bound_addr);
 
         let server_handle = tokio::spawn(async move {
-            let _ = server.run(incoming_tx, outgoing_rx).await;
+            let _ = server.run(incoming_tx, outgoing_rx, None).await;
         });
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -522,7 +528,7 @@ mod tests {
         let server = WebSocketServer::new(bound_addr);
 
         let server_handle = tokio::spawn(async move {
-            let _ = server.run(incoming_tx, outgoing_rx).await;
+            let _ = server.run(incoming_tx, outgoing_rx, None).await;
         });
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -531,7 +537,7 @@ mod tests {
 
         // Connect two clients
         let (mut ws_stream1, _) = connect_async(&url).await.unwrap();
-        let (mut ws_stream2, _) = connect_async(&url).await.unwrap();
+        let (_ws_stream2, _) = connect_async(&url).await.unwrap();
 
         use futures::SinkExt;
 
@@ -612,7 +618,7 @@ mod tests {
         let server = WebSocketServer::new(bound_addr);
 
         let server_handle = tokio::spawn(async move {
-            let _ = server.run(incoming_tx, outgoing_rx).await;
+            let _ = server.run(incoming_tx, outgoing_rx, None).await;
         });
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

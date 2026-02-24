@@ -14,6 +14,12 @@ struct TestHarness {
     client_transport_handle: JoinHandle<()>,
     client_loop_handle: JoinHandle<()>,
     client_outgoing_tx: mpsc::Sender<Envelope>,
+    #[allow(dead_code)]
+    _server_tx_guard: mpsc::Sender<mokosh_protocol::SessionEnvelope>,
+    #[allow(dead_code)]
+    _client_incoming_tx_guard: mpsc::Sender<Envelope>,
+    #[allow(dead_code)]
+    _client_outgoing_tx_guard: mpsc::Sender<Envelope>,
 }
 
 impl Drop for TestHarness {
@@ -39,8 +45,11 @@ async fn setup_test_harness() -> TestHarness {
 
     let ws_server = WebSocketServer::new(bound_addr);
 
+    // Keep one sender alive to prevent channel closure
+    let _server_tx_guard = server_incoming_tx.clone();
+
     let server_transport_handle = tokio::spawn(async move {
-        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx).await;
+        let _ = ws_server.run(server_incoming_tx, server_outgoing_rx, None).await;
     });
 
     let server = Server::new(server_incoming_rx, server_outgoing_tx);
@@ -56,6 +65,10 @@ async fn setup_test_harness() -> TestHarness {
     let (client_outgoing_tx, client_outgoing_rx) = mpsc::channel(100);
 
     let ws_client = WebSocketClient::new(format!("ws://{}", bound_addr));
+
+    // Keep senders alive to prevent channel closure
+    let _client_incoming_tx_guard = client_incoming_tx.clone();
+    let _client_outgoing_tx_guard = client_outgoing_tx.clone();
 
     let client_transport_handle = tokio::spawn(async move {
         let _ = ws_client.run(client_incoming_tx, client_outgoing_rx).await;
@@ -75,6 +88,9 @@ async fn setup_test_harness() -> TestHarness {
         client_transport_handle,
         client_loop_handle,
         client_outgoing_tx,
+        _server_tx_guard,
+        _client_incoming_tx_guard,
+        _client_outgoing_tx_guard,
     }
 }
 

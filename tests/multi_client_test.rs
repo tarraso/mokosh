@@ -25,7 +25,7 @@ async fn test_multiple_clients_independent_rtt() {
     let server_transport = WebSocketServer::new(bound_addr);
     let server_transport_handle = tokio::spawn(async move {
         let _ = server_transport
-            .run(server_incoming_tx, server_outgoing_rx)
+            .run(server_incoming_tx, server_outgoing_rx, None)
             .await;
     });
 
@@ -132,7 +132,7 @@ async fn test_multiple_clients_independent_state() {
     let server_transport = WebSocketServer::new(bound_addr);
     let server_transport_handle = tokio::spawn(async move {
         let _ = server_transport
-            .run(server_incoming_tx, server_outgoing_rx)
+            .run(server_incoming_tx, server_outgoing_rx, None)
             .await;
     });
 
@@ -214,7 +214,7 @@ async fn test_multiple_clients_independent_keepalive() {
     let server_transport = WebSocketServer::new(bound_addr);
     let server_transport_handle = tokio::spawn(async move {
         let _ = server_transport
-            .run(server_incoming_tx, server_outgoing_rx)
+            .run(server_incoming_tx, server_outgoing_rx, None)
             .await;
     });
 
@@ -297,7 +297,7 @@ async fn test_client_disconnect_does_not_affect_others() {
     let server_transport = WebSocketServer::new(bound_addr);
     let server_transport_handle = tokio::spawn(async move {
         let _ = server_transport
-            .run(server_incoming_tx, server_outgoing_rx)
+            .run(server_incoming_tx, server_outgoing_rx, None)
             .await;
     });
 
@@ -409,7 +409,7 @@ async fn test_server_handles_multiple_client_connections() {
     let server_transport = WebSocketServer::new(bound_addr);
     let server_transport_handle = tokio::spawn(async move {
         let _ = server_transport
-            .run(server_incoming_tx, server_outgoing_rx)
+            .run(server_incoming_tx, server_outgoing_rx, None)
             .await;
     });
 
@@ -489,7 +489,7 @@ async fn test_server_send_to_specific_session() {
     let server_transport = WebSocketServer::new(bound_addr);
     let server_transport_handle = tokio::spawn(async move {
         let _ = server_transport
-            .run(server_incoming_tx, server_outgoing_rx)
+            .run(server_incoming_tx, server_outgoing_rx, None)
             .await;
     });
 

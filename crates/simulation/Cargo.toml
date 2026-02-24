@@ -8,11 +8,11 @@ authors.workspace = true
 
 [dependencies]
 mokosh-protocol = { path = "../protocol" }
+mokosh-protocol-derive = { path = "../protocol-derive" }
 serde = { workspace = true }
 thiserror.workspace = true
 tokio = { workspace = true }
 tracing.workspace = true
 
 [dev-dependencies]
-mokosh-protocol-derive = { path = "../protocol-derive" }
 serde_json.workspace = true
