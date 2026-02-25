@@ -122,6 +122,11 @@ impl WebSocketServer {
             let _ = tx.send(());
         }
 
+        // Keep the incoming_tx alive for the lifetime of the server
+        // It will be cloned for each client connection
+        #[allow(unused_variables)]
+        let incoming_tx_keeper = incoming_tx.clone();
+
         // Map of session_id -> channel sender for routing outgoing messages
         let clients: Arc<RwLock<HashMap<SessionId, mpsc::Sender<Envelope>>>> =
             Arc::new(RwLock::new(HashMap::new()));

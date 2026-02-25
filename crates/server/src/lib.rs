@@ -1,22 +1,8 @@
 //! # Mokosh Server
 //!
-//! Server-side event loop for Mokosh protocol.
+//! Server-side event loop for Mokosh protocol with event-based API.
 //!
-//! ## Example
-//!
-//! ```no_run
-//! use mokosh_server::Server;
-//! use tokio::sync::mpsc;
-//!
-//! #[tokio::main]
-//! async fn main() {
-//!     let (incoming_tx, incoming_rx) = mpsc::channel(100);
-//!     let (outgoing_tx, outgoing_rx) = mpsc::channel(100);
-//!
-//!     let server = Server::new(incoming_rx, outgoing_tx);
-//!     server.run().await;
-//! }
-//! ```
+//! Uses `tick()` method for non-blocking event processing.
 
 pub mod transport;
 
@@ -539,86 +525,6 @@ where
         }
 
         Ok(())
-    }
-
-    /// Runs a simple echo server (for testing and simple use cases)
-    ///
-    /// **⚠️ NOT RECOMMENDED FOR PRODUCTION**: This method provides a simple
-    /// echo server that broadcasts all game messages to all connected clients.
-    /// It's suitable for:
-    /// - **Testing and development**
-    /// - **Simple chat applications**
-    /// - **Quick prototypes**
-    ///
-    /// **For production game servers**, use `tick()` to handle `GameEvent`s
-    /// explicitly with your own game logic, validation, and authorization.
-    ///
-    /// # Behavior
-    ///
-    /// - Automatically broadcasts all game messages (route_id >= 100) to ALL clients
-    /// - Control messages (HELLO, PING, AUTH, etc.) are handled automatically
-    /// - No game logic, validation, or authorization
-    /// - No client-side prediction or server reconciliation
-    ///
-    /// # Example (Production - Recommended)
-    ///
-    /// ```no_run
-    /// use mokosh_server::{Server, GameEvent};
-    ///
-    /// # async fn example(mut server: Server<(), ()>) {
-    /// // ✅ Recommended: Use tick() with explicit event handling
-    /// loop {
-    ///     match server.tick().await {
-    ///         Ok(Some(GameEvent::PlayerConnected(id))) => {
-    ///             println!("Player {} connected", id);
-    ///             // Initialize player state
-    ///         }
-    ///         Ok(Some(GameEvent::GameMessage { session_id, envelope })) => {
-    ///             // Validate input, update game state, broadcast to relevant clients
-    ///         }
-    ///         Ok(None) => break,
-    ///         Err(e) => eprintln!("Error: {}", e),
-    ///         _ => {}
-    ///     }
-    /// }
-    /// # }
-    /// ```
-    pub async fn run(mut self) {
-        loop {
-            match self.tick().await {
-                Ok(Some(GameEvent::GameMessage {
-                    session_id: _,
-                    envelope,
-                })) => {
-                    // Simple echo: broadcast to ALL connected clients (including sender)
-                    let connected_sessions: Vec<SessionId> = self
-                        .sessions
-                        .iter()
-                        .filter(|(_, state)| {
-                            state.state.is_connected() || state.state.is_authorized()
-                        })
-                        .map(|(id, _)| *id)
-                        .collect();
-
-                    for target_session in connected_sessions {
-                        let session_envelope =
-                            SessionEnvelope::new(target_session, envelope.clone());
-                        let _ = self.outgoing_tx.send(session_envelope).await;
-                    }
-                }
-                Ok(Some(_)) => {
-                    // Ignore other events (PlayerConnected, PlayerDisconnected)
-                }
-                Ok(None) => {
-                    tracing::info!("Server shutting down: no more events");
-                    break;
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Server error");
-                    break;
-                }
-            }
-        }
     }
 
     /// Handles periodic tasks: timeouts and keepalive for all sessions
@@ -1528,44 +1434,3 @@ pub enum ServerError {
     DecryptionError(String),
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bytes::Bytes;
-    use mokosh_protocol::EnvelopeFlags;
-
-    #[tokio::test]
-    #[ignore] // This test requires HELLO handshake to work with the new event-based API
-              // Echo functionality is tested in integration tests instead
-    async fn test_server_echo() {
-        let (incoming_tx, incoming_rx) = mpsc::channel(10);
-        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(10);
-
-        let server = Server::new(incoming_rx, outgoing_tx);
-        tokio::spawn(async move {
-            server.run().await;
-        });
-
-        let session_id = SessionId::new_v4();
-        let test_envelope = Envelope::new_simple(
-            1,
-            1,
-            0,
-            100,
-            1,
-            EnvelopeFlags::RELIABLE,
-            Bytes::from_static(b"test"),
-        );
-
-        let session_envelope = SessionEnvelope::new(session_id, test_envelope.clone());
-        incoming_tx.send(session_envelope).await.unwrap();
-
-        let received_session_envelope = outgoing_rx.recv().await.unwrap();
-        assert_eq!(received_session_envelope.session_id, session_id);
-
-        let received = received_session_envelope.envelope;
-        assert_eq!(received.route_id, test_envelope.route_id);
-        assert_eq!(received.msg_id, test_envelope.msg_id);
-        assert_eq!(received.payload, test_envelope.payload);
-    }
-}

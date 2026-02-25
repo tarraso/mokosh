@@ -276,7 +276,17 @@ impl PlatformerSimulation {
         // Step 4: Collision detection and resolution
         self.resolve_collisions();
 
-        // Step 5: Apply friction to boxes
+        // Step 5: Apply friction to players when on ground
+        for player in self.players.values_mut() {
+            if player.on_ground {
+                player.velocity.x *= 0.8; // Friction coefficient
+                if player.velocity.x.abs() < 5.0 {
+                    player.velocity.x = 0.0;
+                }
+            }
+        }
+
+        // Step 6: Apply friction to boxes
         for b in &mut self.boxes {
             if b.on_ground {
                 b.velocity.x *= self.friction;
@@ -286,7 +296,7 @@ impl PlatformerSimulation {
             }
         }
 
-        // Step 6: Ground check
+        // Step 7: Ground check
         self.check_ground();
     }
 

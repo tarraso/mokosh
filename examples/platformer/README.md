@@ -1,7 +1,7 @@
 # 2D Platformer Example
 
 Multiplayer 2D platformer demonstrating:
-- **Shared simulation** between client and server (`crates/simulation/src/platformer.rs`)
+- **Shared simulation** between client and server (`simulation.rs`)
 - **Server-authoritative physics** with gravity, jumping, collision
 - **Pushable boxes** that can be stacked
 - **Client-side prediction** (coming soon - Godot integration)
@@ -12,10 +12,10 @@ Multiplayer 2D platformer demonstrating:
 ```
 examples/platformer/
 ├── godot-client/         # Godot 4 client (GDScript + Mokosh bindings)
-├── run_platformer.sh     # Launcher script (server + clients)
+├── server.rs             # Server executable (Rust)
+├── simulation.rs         # Shared physics simulation
+├── run_platformer.sh     # Launcher script (server + client)
 └── README.md             # This file
-examples/platformer_server.rs  # Server executable (Rust)
-crates/simulation/src/platformer.rs  # Shared physics simulation
 ```
 
 ## Quick Start

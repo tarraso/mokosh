@@ -12,12 +12,12 @@
 //! cargo run --example platformer_server
 //! ```
 
-mod platformer;
+mod simulation;
 
-use mokosh_server::{Server, GameEvent};
 use mokosh_server::transport::websocket::WebSocketServer;
+use mokosh_server::{GameEvent, Server};
 use mokosh_simulation::Simulation;
-use platformer::{PlatformerSimulation, PlayerInput};
+use simulation::{PlatformerSimulation, PlayerInput};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -45,7 +45,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = "127.0.0.1:8080".parse()?;
     let transport = WebSocketServer::new(addr);
     tokio::spawn(async move {
-        if let Err(e) = transport.run(incoming_tx, outgoing_rx, Some(ready_tx)).await {
+        if let Err(e) = transport
+            .run(incoming_tx, outgoing_rx, Some(ready_tx))
+            .await
+        {
             eprintln!("❌ Transport error: {}", e);
         }
     });
@@ -85,34 +88,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Process server events (connections, disconnections, game messages)
             result = server.tick() => {
-                match result? {
-                    Some(GameEvent::PlayerConnected(session_id)) => {
-                        platformer_sim.add_player(session_id);
-                        println!("👤 Player {} joined (total: {})",
-                            session_id, server.client_count());
-                    }
+                if let Some(event) = result? {
+                    match event {
+                        GameEvent::PlayerConnected(session_id) => {
+                            platformer_sim.add_player(session_id);
+                            println!("👤 Player {} joined (total: {})",
+                                session_id, server.client_count());
+                        }
 
-                    Some(GameEvent::PlayerDisconnected(session_id)) => {
-                        platformer_sim.remove_player(session_id);
-                        println!("👋 Player {} left (total: {})",
-                            session_id, server.client_count());
-                    }
+                        GameEvent::PlayerDisconnected(session_id) => {
+                            platformer_sim.remove_player(session_id);
+                            println!("👋 Player {} left (total: {})",
+                                session_id, server.client_count());
+                        }
 
-                    Some(GameEvent::GameMessage { session_id, envelope }) => {
-                        // Check if this is a PlayerInput message (route_id = 100)
-                        if envelope.route_id == 100 {
-                            // Decode PlayerInput from JSON
-                            if let Ok(input) = serde_json::from_slice::<PlayerInput>(&envelope.payload) {
-                                platformer_sim.apply_input_to_player(session_id, &input);
-                            } else {
-                                eprintln!("Failed to decode PlayerInput from {}", session_id);
+                        GameEvent::GameMessage { session_id, envelope } => {
+                            // Check if this is a PlayerInput message (route_id = 100)
+                            if envelope.route_id == 100 {
+                                // Decode PlayerInput from JSON
+                                if let Ok(input) = serde_json::from_slice::<PlayerInput>(&envelope.payload) {
+                                    platformer_sim.apply_input_to_player(session_id, &input);
+                                } else {
+                                    eprintln!("Failed to decode PlayerInput from {}", session_id);
+                                }
                             }
                         }
-                    }
-
-                    None => {
-                        println!("Server shutting down");
-                        break;
                     }
                 }
             }
