@@ -252,27 +252,6 @@ Codec comparison (1000 messages):
 With Zstd compression: ~72% additional reduction
 With Lz4 compression: ~55% additional reduction
 
-## Roadmap
-
-### ✅ Completed (Phases 1-6)
-
-- Core protocol and transports
-- Message registry with schema validation
-- Authentication system
-- Keepalive, replay protection, rate limiting
-- Encryption and compression
-- Client prediction and server simulation
-- Godot 4 GDExtension bindings (MVP)
-
-### 📋 Future Work (Phase 7+)
-
-- Performance benchmarking suite
-- API documentation (`cargo doc`)
-- Production deployment guides
-- Advanced Godot networking features
-- WebRTC transport
-- Metrics and observability
-
 ## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
