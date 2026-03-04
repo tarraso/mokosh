@@ -5,8 +5,8 @@
 //! while keeping the client and server event loops transport-agnostic.
 
 use crate::Envelope;
+use crate::compat::mpsc;
 use async_trait::async_trait;
-use tokio::sync::mpsc;
 
 /// Transport layer abstraction for network communication
 ///
@@ -45,10 +45,72 @@ use tokio::sync::mpsc;
 ///     }
 /// }
 /// ```
+// WASM has priority - doesn't support Send (single-threaded, futures-based)
+#[cfg(feature = "wasm")]
+#[async_trait(?Send)]
+pub trait Transport: 'static {
+    /// Error type for this transport
+    type Error: std::error::Error + 'static;
+
+    /// Runs the transport layer, bridging envelope channels
+    ///
+    /// This method establishes connectivity (connect for clients, listen for servers)
+    /// and runs a loop that:
+    /// - Receives raw data from the network, decodes it into Envelopes,
+    ///   and sends them to `incoming_tx`
+    /// - Receives Envelopes from `outgoing_rx`, encodes them,
+    ///   and sends them over the network
+    ///
+    /// # Arguments
+    /// * `incoming_tx` - Channel to send received envelopes to the event loop
+    /// * `outgoing_rx` - Channel to receive envelopes from the event loop
+    ///
+    /// # Returns
+    /// Returns `Ok(())` when the transport is shut down gracefully,
+    /// or an error if something went wrong.
+    async fn run(
+        self,
+        incoming_tx: mpsc::Sender<Envelope>,
+        outgoing_rx: mpsc::Receiver<Envelope>,
+    ) -> Result<(), Self::Error>;
+}
+
+// Native requires Send for multi-threading with tokio (only if wasm is not enabled)
+#[cfg(all(feature = "native", not(feature = "wasm")))]
 #[async_trait]
 pub trait Transport: Send + 'static {
     /// Error type for this transport
     type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Runs the transport layer, bridging envelope channels
+    ///
+    /// This method establishes connectivity (connect for clients, listen for servers)
+    /// and runs a loop that:
+    /// - Receives raw data from the network, decodes it into Envelopes,
+    ///   and sends them to `incoming_tx`
+    /// - Receives Envelopes from `outgoing_rx`, encodes them,
+    ///   and sends them over the network
+    ///
+    /// # Arguments
+    /// * `incoming_tx` - Channel to send received envelopes to the event loop
+    /// * `outgoing_rx` - Channel to receive envelopes from the event loop
+    ///
+    /// # Returns
+    /// Returns `Ok(())` when the transport is shut down gracefully,
+    /// or an error if something went wrong.
+    async fn run(
+        self,
+        incoming_tx: mpsc::Sender<Envelope>,
+        outgoing_rx: mpsc::Receiver<Envelope>,
+    ) -> Result<(), Self::Error>;
+}
+
+// Fallback for when neither native nor wasm is enabled (e.g., testing with --no-default-features)
+#[cfg(not(any(feature = "native", feature = "wasm")))]
+#[async_trait(?Send)]
+pub trait Transport: 'static {
+    /// Error type for this transport
+    type Error: std::error::Error + 'static;
 
     /// Runs the transport layer, bridging envelope channels
     ///

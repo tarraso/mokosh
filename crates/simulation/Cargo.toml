@@ -7,7 +7,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-mokosh-protocol = { path = "../protocol" }
+mokosh-protocol = { path = "../protocol", default-features = false }
 mokosh-protocol-derive = { path = "../protocol-derive" }
 serde = { workspace = true }
 thiserror.workspace = true

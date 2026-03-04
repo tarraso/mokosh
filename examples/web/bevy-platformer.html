@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bevy 2D Platformer Client (WASM)</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+            font-family: 'Courier New', monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 24px;
+        }
+
+        .info {
+            margin-bottom: 20px;
+            padding: 10px;
+            background: #2a2a2a;
+            border-radius: 5px;
+            max-width: 800px;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .control-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px;
+            background: #333;
+            border-radius: 3px;
+        }
+
+        .key {
+            background: #444;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-weight: bold;
+            color: #4CAF50;
+        }
+
+        #bevy-canvas {
+            border: 2px solid #4CAF50;
+            border-radius: 5px;
+            box-shadow: 0 0 20px rgba(76, 175, 80, 0.3);
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            background: #2a2a2a;
+            border-radius: 5px;
+            max-width: 800px;
+            width: 100%;
+        }
+
+        #console {
+            background: #000;
+            padding: 10px;
+            border-radius: 3px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .log-line {
+            margin: 2px 0;
+        }
+
+        .log-info { color: #4CAF50; }
+        .log-warn { color: #FFC107; }
+        .log-error { color: #F44336; }
+    </style>
+</head>
+<body>
+    <h1>🎮 Bevy 2D Platformer Client (WASM)</h1>
+
+    <div class="info">
+        <h3>Controls:</h3>
+        <div class="controls">
+            <div class="control-item">
+                <span>Move Left</span>
+                <span><span class="key">A</span> or <span class="key">←</span></span>
+            </div>
+            <div class="control-item">
+                <span>Move Right</span>
+                <span><span class="key">D</span> or <span class="key">→</span></span>
+            </div>
+            <div class="control-item">
+                <span>Jump</span>
+                <span><span class="key">SPACE</span></span>
+            </div>
+        </div>
+        <p><strong>Blue square</strong> = You | <strong>Red square</strong> = Other players | <strong>Brown square</strong> = Physics boxes</p>
+    </div>
+
+    <canvas id="bevy-canvas" width="800" height="600"></canvas>
+
+    <div class="status">
+        <h3>Console Output:</h3>
+        <div id="console"></div>
+    </div>
+
+    <script type="module">
+        // Intercept console logs
+        const consoleDiv = document.getElementById('console');
+        const originalLog = console.log;
+        const originalError = console.error;
+        const originalWarn = console.warn;
+
+        function addLog(message, type = 'info') {
+            const line = document.createElement('div');
+            line.className = `log-line log-${type}`;
+            line.textContent = message;
+            consoleDiv.appendChild(line);
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+
+            // Keep only last 100 lines
+            while (consoleDiv.children.length > 100) {
+                consoleDiv.removeChild(consoleDiv.firstChild);
+            }
+        }
+
+        console.log = function(...args) {
+            addLog(args.join(' '), 'info');
+            originalLog.apply(console, args);
+        };
+
+        console.error = function(...args) {
+            addLog(args.join(' '), 'error');
+            originalError.apply(console, args);
+        };
+
+        console.warn = function(...args) {
+            addLog(args.join(' '), 'warn');
+            originalWarn.apply(console, args);
+        };
+
+        // Load WASM module
+        import init from './pkg/bevy_platformer_client_wasm.js';
+
+        console.log('Loading Bevy WASM module...');
+
+        init().then(() => {
+            console.log('✅ Bevy WASM module loaded successfully!');
+        }).catch(err => {
+            console.error('❌ Failed to load WASM module:', err);
+        });
+    </script>
+</body>
+</html>

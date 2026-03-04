@@ -7,7 +7,7 @@
 //!
 //! ## Example
 //!
-//! ```
+//! ```ignore
 //! use mokosh_protocol::compression::{Compressor, ZstdCompressor, CompressionType};
 //!
 //! let compressor = ZstdCompressor::new();
@@ -27,10 +27,12 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum CompressionError {
     /// Zstd compression failed
+    #[cfg(feature = "compression")]
     #[error("Zstd compression failed: {0}")]
     ZstdCompressionFailed(#[from] std::io::Error),
 
     /// Lz4 compression failed
+    #[cfg(feature = "compression")]
     #[error("Lz4 compression failed: {0}")]
     Lz4CompressionFailed(String),
 
@@ -97,11 +99,13 @@ impl Compressor for NoCompressor {
 ///
 /// Uses zstd compression with default compression level (3).
 /// Provides good balance between speed and compression ratio.
+#[cfg(feature = "compression")]
 #[derive(Debug, Clone)]
 pub struct ZstdCompressor {
     level: i32,
 }
 
+#[cfg(feature = "compression")]
 impl ZstdCompressor {
     /// Creates a new Zstd compressor with default level (3)
     pub fn new() -> Self {
@@ -118,12 +122,14 @@ impl ZstdCompressor {
     }
 }
 
+#[cfg(feature = "compression")]
 impl Default for ZstdCompressor {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "compression")]
 impl Compressor for ZstdCompressor {
     fn compress(&self, data: &[u8]) -> CompressionResult<Bytes> {
         let compressed = zstd::encode_all(data, self.level)?;
@@ -144,9 +150,11 @@ impl Compressor for ZstdCompressor {
 ///
 /// Uses lz4 compression for maximum speed.
 /// Provides fastest compression with moderate ratio.
+#[cfg(feature = "compression")]
 #[derive(Debug, Clone)]
 pub struct Lz4Compressor;
 
+#[cfg(feature = "compression")]
 impl Lz4Compressor {
     /// Creates a new Lz4 compressor
     pub fn new() -> Self {
@@ -154,12 +162,14 @@ impl Lz4Compressor {
     }
 }
 
+#[cfg(feature = "compression")]
 impl Default for Lz4Compressor {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "compression")]
 impl Compressor for Lz4Compressor {
     fn compress(&self, data: &[u8]) -> CompressionResult<Bytes> {
         // Prepend original size (u32 big-endian) for decompression
@@ -199,7 +209,7 @@ impl Compressor for Lz4Compressor {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "compression"))]
 mod tests {
     use super::*;
 

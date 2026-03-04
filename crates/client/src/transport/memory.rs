@@ -9,7 +9,7 @@
 use super::Transport;
 use async_trait::async_trait;
 use mokosh_protocol::Envelope;
-use tokio::sync::mpsc;
+use crate::compat::mpsc;
 
 /// In-memory client transport that communicates via channels
 ///
@@ -73,6 +73,8 @@ impl MemoryTransport {
     }
 }
 
+// Native feature: use tokio::select! with tokio channels
+#[cfg(feature = "native")]
 #[async_trait]
 impl Transport for MemoryTransport {
     type Error = MemoryTransportError;
@@ -87,19 +89,64 @@ impl Transport for MemoryTransport {
                 // Receive from peer, forward to event loop
                 Some(envelope) = self.from_peer.recv() => {
                     if incoming_tx.send(envelope).await.is_err() {
-                        return Err(MemoryTransportError::ChannelClosed);
+                        break; // Event loop dropped receiver
                     }
                 }
 
-                // Receive from event loop, send to peer
+                // Receive from event loop, forward to peer
                 Some(envelope) = outgoing_rx.recv() => {
                     if self.to_peer.send(envelope).await.is_err() {
-                        return Err(MemoryTransportError::ChannelClosed);
+                        break; // Peer dropped receiver
                     }
                 }
 
                 else => {
-                    return Ok(());
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// WASM or no features: use futures::select! with futures channels
+#[cfg(not(feature = "native"))]
+#[async_trait(?Send)]
+impl Transport for MemoryTransport {
+    type Error = MemoryTransportError;
+
+    async fn run(
+        mut self,
+        mut incoming_tx: mpsc::Sender<Envelope>,
+        mut outgoing_rx: mpsc::Receiver<Envelope>,
+    ) -> Result<(), Self::Error> {
+        use futures::{SinkExt, StreamExt};
+
+        loop {
+            futures::select! {
+                // Receive from peer, forward to event loop
+                envelope = self.from_peer.next() => {
+                    match envelope {
+                        Some(envelope) => {
+                            if incoming_tx.send(envelope).await.is_err() {
+                                return Err(MemoryTransportError::ChannelClosed);
+                            }
+                        }
+                        None => return Ok(()),
+                    }
+                }
+
+                // Receive from event loop, send to peer
+                envelope = outgoing_rx.next() => {
+                    match envelope {
+                        Some(envelope) => {
+                            if self.to_peer.send(envelope).await.is_err() {
+                                return Err(MemoryTransportError::ChannelClosed);
+                            }
+                        }
+                        None => return Ok(()),
+                    }
                 }
             }
         }

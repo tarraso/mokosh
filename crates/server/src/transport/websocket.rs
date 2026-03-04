@@ -155,6 +155,7 @@ impl WebSocketServer {
                             let clients_clone = clients.clone();
 
                             tokio::spawn(async move {
+                                let disconnect_tx = incoming_tx.clone();
                                 if let Err(e) = handle_connection(
                                     stream,
                                     session_id,
@@ -163,6 +164,31 @@ impl WebSocketServer {
                                     peer_addr,
                                 ).await {
                                     tracing::error!(peer = %peer_addr, session = %session_id, error = %e, "Connection error");
+                                }
+
+                                // Send DISCONNECT notification to Server so it can clean up session state
+                                use mokosh_protocol::messages::{routes, Disconnect, DisconnectReason};
+                                use mokosh_protocol::{CodecType, Envelope, EnvelopeFlags, CURRENT_PROTOCOL_VERSION};
+
+                                let disconnect = Disconnect {
+                                    reason: DisconnectReason::ClientRequested,
+                                    message: "Connection closed".to_string(),
+                                };
+
+                                if let Ok(payload) = CodecType::from_id(1).unwrap().encode(&disconnect) {
+                                    let disconnect_envelope = Envelope::new_simple(
+                                        CURRENT_PROTOCOL_VERSION,
+                                        1, // JSON codec for control messages
+                                        0,
+                                        routes::DISCONNECT,
+                                        0,
+                                        EnvelopeFlags::RELIABLE,
+                                        payload,
+                                    );
+
+                                    let session_envelope = SessionEnvelope::new(session_id, disconnect_envelope);
+                                    let _ = disconnect_tx.send(session_envelope).await;
+                                    tracing::debug!(session = %session_id, "Sent DISCONNECT notification to Server");
                                 }
 
                                 // Clean up the client from the routing map on disconnect

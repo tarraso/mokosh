@@ -9,7 +9,7 @@ authors.workspace = true
 [dependencies]
 mokosh-protocol = { path = "../protocol" }
 mokosh-client = { path = "../client" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "net"] }
 thiserror = { workspace = true }
 bytes = { workspace = true }
 tokio-tungstenite = { workspace = true }

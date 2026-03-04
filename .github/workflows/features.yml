@@ -1,0 +1,170 @@
+name: Feature Flags Testing
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test-features:
+    name: Test Feature Combinations
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # mokosh-protocol feature combinations
+          - crate: mokosh-protocol
+            features: ""
+            name: "protocol: no features"
+          - crate: mokosh-protocol
+            features: "compression"
+            name: "protocol: compression only"
+          - crate: mokosh-protocol
+            features: "native"
+            name: "protocol: native (includes compression)"
+
+          # mokosh-client feature combinations
+          - crate: mokosh-client
+            features: ""
+            name: "client: no features"
+          - crate: mokosh-client
+            features: "native"
+            name: "client: native"
+          - crate: mokosh-client
+            features: "wasm"
+            name: "client: wasm"
+            target: "wasm32-unknown-unknown"
+
+          # mokosh-server (no features, always native)
+          - crate: mokosh-server
+            features: ""
+            name: "server: default"
+
+          # Root crate (mokosh) combinations
+          - crate: mokosh
+            features: ""
+            name: "root: no features"
+          - crate: mokosh
+            features: "native"
+            name: "root: native"
+          - crate: mokosh
+            features: "wasm"
+            name: "root: wasm"
+            target: "wasm32-unknown-unknown"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ matrix.crate }}-${{ matrix.features }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build ${{ matrix.name }}
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            if [ -n "${{ matrix.target }}" ]; then
+              cargo build -p ${{ matrix.crate }} --no-default-features --target ${{ matrix.target }}
+            else
+              cargo build -p ${{ matrix.crate }} --no-default-features
+            fi
+          else
+            if [ -n "${{ matrix.target }}" ]; then
+              cargo build -p ${{ matrix.crate }} --no-default-features --features "${{ matrix.features }}" --target ${{ matrix.target }}
+            else
+              cargo build -p ${{ matrix.crate }} --no-default-features --features "${{ matrix.features }}"
+            fi
+          fi
+
+      - name: Test ${{ matrix.name }}
+        # Skip tests for WASM targets (they require a browser/Node.js runtime)
+        if: matrix.target != 'wasm32-unknown-unknown'
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            cargo test -p ${{ matrix.crate }} --no-default-features
+          else
+            cargo test -p ${{ matrix.crate }} --no-default-features --features "${{ matrix.features }}"
+          fi
+
+      - name: Check ${{ matrix.name }}
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            if [ -n "${{ matrix.target }}" ]; then
+              cargo check -p ${{ matrix.crate }} --no-default-features --target ${{ matrix.target }}
+            else
+              cargo check -p ${{ matrix.crate }} --no-default-features
+            fi
+          else
+            if [ -n "${{ matrix.target }}" ]; then
+              cargo check -p ${{ matrix.crate }} --no-default-features --features "${{ matrix.features }}" --target ${{ matrix.target }}
+            else
+              cargo check -p ${{ matrix.crate }} --no-default-features --features "${{ matrix.features }}"
+            fi
+          fi
+
+  clippy-features:
+    name: Clippy Feature Combinations
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crate: mokosh-protocol
+            features: "native"
+          - crate: mokosh-client
+            features: "native"
+          - crate: mokosh-client
+            features: "wasm"
+            target: "wasm32-unknown-unknown"
+          - crate: mokosh-server
+            features: ""
+          - crate: mokosh
+            features: "native"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Clippy ${{ matrix.crate }} with features: ${{ matrix.features }}
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            if [ -n "${{ matrix.target }}" ]; then
+              cargo clippy -p ${{ matrix.crate }} --no-default-features --target ${{ matrix.target }} -- -D warnings
+            else
+              cargo clippy -p ${{ matrix.crate }} --no-default-features -- -D warnings
+            fi
+          else
+            if [ -n "${{ matrix.target }}" ]; then
+              cargo clippy -p ${{ matrix.crate }} --no-default-features --features "${{ matrix.features }}" --target ${{ matrix.target }} -- -D warnings
+            else
+              cargo clippy -p ${{ matrix.crate }} --no-default-features --features "${{ matrix.features }}" -- -D warnings
+            fi
+          fi

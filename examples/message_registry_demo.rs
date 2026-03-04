@@ -74,7 +74,7 @@ async fn demo_old_way() {
     let (_, incoming_rx) = mpsc::channel(10);
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel(10);
 
-    let client = Client::new(incoming_rx, outgoing_tx);
+    let mut client = Client::new(incoming_rx, outgoing_tx);
 
     // Manual message creation - verbose and error-prone
     let player_input = PlayerInput {

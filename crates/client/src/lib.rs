@@ -6,7 +6,7 @@
 //!
 //! ```no_run
 //! use mokosh_client::Client;
-//! use tokio::sync::mpsc;
+//! use mokosh_client::compat::mpsc;
 //!
 //! #[tokio::main]
 //! async fn main() {
@@ -18,7 +18,11 @@
 //! }
 //! ```
 
+mod compat;
 pub mod transport;
+
+// Re-export compat for public API
+pub use compat::mpsc;
 
 use mokosh_protocol::{
     compression::{Compressor, NoCompressor},
@@ -30,8 +34,12 @@ use mokosh_protocol::{
     CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, CURRENT_PROTOCOL_VERSION,
     MIN_PROTOCOL_VERSION,
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
+use instant::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+// Import SinkExt for futures::mpsc::Sender::send() when using futures (WASM)
+#[cfg(feature = "wasm")]
+use futures::SinkExt;
 
 /// Client configuration
 #[derive(Debug, Clone)]
@@ -349,9 +357,10 @@ where
     /// Runs the main event loop
     ///
     /// This method will block until the incoming channel is closed.
+    #[cfg(all(feature = "native", not(feature = "wasm")))]
     pub async fn run(mut self) {
         // Interval for periodic tasks (keepalive check, timeout check)
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let mut interval = crate::compat::time::interval(Duration::from_secs(1));
 
         loop {
             tokio::select! {
@@ -372,6 +381,49 @@ where
                 else => {
                     tracing::info!("Client shutting down: incoming channel closed");
                     break;
+                }
+            }
+        }
+    }
+
+    /// Runs the main event loop (WASM version)
+    ///
+    /// This method will block until the incoming channel is closed.
+    /// For WASM, we use futures::select! and manual periodic task tracking.
+    #[cfg(feature = "wasm")]
+    pub async fn run(mut self) {
+        use futures::StreamExt;
+
+        // Track last periodic task time
+        let mut last_periodic_check = Instant::now();
+        let periodic_interval = Duration::from_secs(1);
+
+        loop {
+            futures::select! {
+                envelope = self.incoming_rx.next() => {
+                    match envelope {
+                        Some(envelope) => {
+                            // Update last received time
+                            self.last_received = Instant::now();
+                            self.handle_envelope(envelope).await;
+                        }
+                        None => {
+                            tracing::info!("Client shutting down: incoming channel closed");
+                            break;
+                        }
+                    }
+                }
+
+                complete => {
+                    // Check if it's time for periodic tasks
+                    let now = Instant::now();
+                    if now.duration_since(last_periodic_check) >= periodic_interval {
+                        last_periodic_check = now;
+                        if let Err(e) = self.handle_periodic_tasks().await {
+                            tracing::error!(error = %e, "Periodic task error");
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -461,7 +513,7 @@ where
         tracing::debug!(route_id = envelope.route_id, "Received game message");
 
         // Forward to application if channel is configured
-        if let Some(tx) = &self.game_messages_tx {
+        if let Some(tx) = &mut self.game_messages_tx {
             if let Err(e) = tx.send(envelope).await {
                 tracing::error!(error = %e, "Failed to forward game message to application");
             }
@@ -653,7 +705,7 @@ where
     /// - Control messages (route_id < 100)
     /// - Custom protocol extensions
     /// - Testing and debugging
-    pub async fn send(&self, envelope: Envelope) -> Result<(), ClientError> {
+    pub async fn send(&mut self, envelope: Envelope) -> Result<(), ClientError> {
         self.outgoing_tx
             .send(envelope)
             .await

@@ -8,6 +8,7 @@ members = [
     "crates/simulation",
     "crates/godot-bindings",
 ]
+exclude = ["examples/platformer_bevy"]
 default-members = ["."]
 
 [package]
@@ -18,14 +19,19 @@ license = "MIT"
 repository = "https://github.com/yourusername/mokosh"
 authors = ["Mokosh Contributors"]
 
+[features]
+default = ["native"]
+native = ["mokosh-protocol/native", "mokosh-client/native", "mokosh-server", "mokosh-simulation", "tokio-tungstenite", "tokio/rt", "tokio/rt-multi-thread"]
+wasm = ["mokosh-client/wasm"]
+
 [dependencies]
-mokosh-protocol = { path = "crates/protocol" }
-mokosh-server = { path = "crates/server" }
-mokosh-client = { path = "crates/client" }
-mokosh-simulation = { path = "crates/simulation" }
-tokio = { workspace = true }
+mokosh-protocol = { path = "crates/protocol", default-features = false }
+mokosh-server = { path = "crates/server", optional = true }
+mokosh-client = { path = "crates/client", default-features = false }
+mokosh-simulation = { path = "crates/simulation", optional = true }
+tokio = { workspace = true, default-features = false, features = ["sync", "macros"] }
 bytes = { workspace = true }
-tokio-tungstenite = { workspace = true }
+tokio-tungstenite = { workspace = true, optional = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
@@ -37,10 +43,34 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"
+bevy = "0.18"
+
+# WASM-specific dependencies for browser examples (no tokio needed)
+console_error_panic_hook = "0.1"
+wasm-logger = "0.2"
+log = "0.4"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+instant = { version = "0.1", features = ["wasm-bindgen"] }
+# futures is now used instead of tokio for WASM
 
 [[example]]
 name = "platformer_server"
 path = "examples/platformer/server.rs"
+
+[[example]]
+name = "bevy_platformer_server"
+path = "examples/platformer_bevy/server.rs"
+
+[[example]]
+name = "bevy_platformer_client"
+path = "examples/platformer_bevy/client.rs"
+
+[[example]]
+name = "bevy_platformer_client_wasm"
+path = "examples/platformer_bevy/client_wasm.rs"
+crate-type = ["cdylib"]
+required-features = ["wasm"]
 
 [workspace.package]
 version = "0.1.0"
@@ -57,10 +87,11 @@ async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 postcard = { version = "1.0", features = ["alloc"] }
-tokio = { version = "1.42", features = ["rt", "rt-multi-thread", "sync", "macros", "time", "net"] }
-tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tokio = { version = "1.42", default-features = false, features = ["time", "sync"] }
+tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "__rustls-tls"] }
 futures = "0.3"
-uuid = { version = "1.11", features = ["v4", "serde"] }
+uuid = { version = "1.11", features = ["v4", "serde", "js"] }
+getrandom = { version = "0.2", features = ["js"] }
 tracing = "0.1"
 zstd = "0.13"
 lz4 = "1.24"

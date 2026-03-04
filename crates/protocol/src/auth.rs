@@ -66,7 +66,7 @@ impl AuthProvider for MockAuthProvider {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
 

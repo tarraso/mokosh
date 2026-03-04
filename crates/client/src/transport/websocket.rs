@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use mokosh_protocol::Envelope;
-use tokio::sync::mpsc;
+use crate::compat::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 /// WebSocket client that connects to a server and bridges envelope channels

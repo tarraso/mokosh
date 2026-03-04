@@ -6,14 +6,30 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = ["native"]
+native = ["mokosh-protocol/native", "tokio", "tokio-tungstenite", "tokio/net", "tokio/rt-multi-thread", "tokio/macros", "tokio/sync", "tokio/time"]
+wasm = ["wasm-bindgen", "web-sys", "js-sys", "wasm-bindgen-futures"]
+
 [dependencies]
-mokosh-protocol = { path = "../protocol" }
-tokio = { workspace = true }
+mokosh-protocol = { path = "../protocol", default-features = false }
 thiserror = { workspace = true }
 bytes = { workspace = true }
-tokio-tungstenite = { workspace = true }
-futures = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+instant = { version = "0.1", features = ["wasm-bindgen"] }
+
+# Native-only dependencies
+tokio = { workspace = true, default-features = false, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+
+# Futures (for both native and WASM, but required for WASM)
+futures = { workspace = true }
+
+# WASM-specific dependencies
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", features = ["WebSocket", "MessageEvent", "ErrorEvent", "BinaryType", "Blob", "CloseEvent"], optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }

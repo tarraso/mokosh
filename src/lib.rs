@@ -18,4 +18,9 @@
 
 pub use mokosh_client as client;
 pub use mokosh_protocol as protocol;
+
+#[cfg(feature = "mokosh-server")]
 pub use mokosh_server as server;
+
+#[cfg(feature = "mokosh-simulation")]
+pub use mokosh_simulation as simulation;
