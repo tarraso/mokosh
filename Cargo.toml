@@ -22,6 +22,7 @@ authors = ["Mokosh Contributors"]
 [features]
 default = ["native"]
 native = ["mokosh-protocol/native", "mokosh-client/native", "mokosh-server", "mokosh-simulation", "tokio-tungstenite", "tokio/rt", "tokio/rt-multi-thread"]
+compression = ["mokosh-protocol/compression"]
 wasm = ["mokosh-client/wasm"]
 
 [dependencies]
@@ -44,6 +45,7 @@ serde_json = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"
 bevy = "0.18"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 # WASM-specific dependencies for browser examples (no tokio needed)
 console_error_panic_hook = "0.1"
@@ -71,6 +73,18 @@ name = "bevy_platformer_client_wasm"
 path = "examples/platformer_bevy/client_wasm.rs"
 crate-type = ["cdylib"]
 required-features = ["wasm"]
+
+[[bench]]
+name = "envelope_bench"
+harness = false
+
+[[bench]]
+name = "codec_bench"
+harness = false
+
+[[bench]]
+name = "compression_bench"
+harness = false
 
 [workspace.package]
 version = "0.1.0"

@@ -34,6 +34,7 @@ const SERVER_URL: &str = "ws://127.0.0.1:8080";
 // ============================================================================
 
 #[derive(Component)]
+#[allow(dead_code)]
 struct PlayerEntity {
     session_id: String,
 }
@@ -42,6 +43,7 @@ struct PlayerEntity {
 struct LocalPlayerMarker;
 
 #[derive(Component)]
+#[allow(dead_code)]
 struct BoxEntity {
     box_id: u32,
 }
@@ -62,19 +64,12 @@ struct NetworkClient {
 }
 
 #[derive(Resource)]
+#[derive(Default)]
 struct GameEntities {
     players: HashMap<String, Entity>,
     boxes: HashMap<u32, Entity>,
 }
 
-impl Default for GameEntities {
-    fn default() -> Self {
-        Self {
-            players: HashMap::new(),
-            boxes: HashMap::new(),
-        }
-    }
-}
 
 #[derive(Resource)]
 struct LocalSessionId(String);

@@ -26,7 +26,7 @@ use crate::{InputBuffer, Simulation};
 /// # #[derive(Clone, Serialize, Deserialize, GameMessage)]
 /// # #[route_id = 100]
 /// # struct GameState { x: f32 }
-/// # #[derive(Serialize, Deserialize, GameMessage)]
+/// # #[derive(Clone, Serialize, Deserialize, GameMessage)]
 /// # #[route_id = 101]
 /// # struct Input { dx: f32 }
 /// # #[derive(Clone)]
@@ -174,7 +174,7 @@ impl<S: Simulation> ClientPredictor<S> {
     /// # #[derive(Clone, Serialize, Deserialize, GameMessage)]
     /// # #[route_id = 100]
     /// # struct GameState { x: f32 }
-    /// # #[derive(Serialize, Deserialize, GameMessage)]
+    /// # #[derive(Clone, Serialize, Deserialize, GameMessage)]
     /// # #[route_id = 101]
     /// # struct Input { dx: f32 }
     /// # #[derive(Clone)]

@@ -351,9 +351,19 @@ where
     /// # Example
     ///
     /// ```no_run
+    /// # use mokosh_server::Server;
+    /// # use mokosh_protocol::SessionId;
+    /// # use tokio::sync::mpsc;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// # let (_incoming_tx, incoming_rx) = mpsc::channel(100);
+    /// # let (outgoing_tx, _outgoing_rx) = mpsc::channel(100);
+    /// # let server = Server::new(incoming_rx, outgoing_tx);
+    /// # let session_id = SessionId::new_v4();
     /// if let Some(rtt) = server.get_session_rtt(session_id) {
     ///     println!("Client RTT: {}ms", rtt.as_millis());
     /// }
+    /// # }
     /// ```
     pub fn get_session_rtt(&self, session_id: SessionId) -> Option<Duration> {
         self.sessions.get(&session_id).and_then(|s| s.last_rtt)
@@ -425,12 +435,12 @@ where
     ///                 // Broadcast to all clients
     ///             }
     ///
-    ///             Some(event) = server.tick() => {
-    ///                 match event {
+    ///             result = server.tick() => {
+    ///                 match result {
     ///                     Ok(Some(GameEvent::PlayerConnected(session_id))) => {
     ///                         game_state.push(session_id);
     ///                     }
-    ///                     Ok(Some(GameEvent::GameMessage { session_id: _, envelope })) => {
+    ///                     Ok(Some(GameEvent::GameMessage { session_id: _, envelope: _ })) => {
     ///                         // Handle game message
     ///                     }
     ///                     _ => {}
@@ -1434,3 +1444,338 @@ pub enum ServerError {
     DecryptionError(String),
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use mokosh_protocol::{messages::routes, ConnectionState, Envelope, EnvelopeFlags};
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    /// Helper: Creates a test server with default config
+    fn create_test_server() -> (
+        Server<NoCompressor, NoEncryptor>,
+        mpsc::Sender<SessionEnvelope>,
+        mpsc::Receiver<SessionEnvelope>,
+    ) {
+        let (incoming_tx, incoming_rx) = mpsc::channel(10);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel(10);
+        let server = Server::new(incoming_rx, outgoing_tx);
+        (server, incoming_tx, outgoing_rx)
+    }
+
+    /// Helper: Creates a HELLO envelope
+    fn create_hello_envelope(session_id: SessionId) -> SessionEnvelope {
+        use mokosh_protocol::messages::Hello;
+        use mokosh_protocol::CURRENT_PROTOCOL_VERSION;
+
+        let hello = Hello {
+            protocol_version: CURRENT_PROTOCOL_VERSION,
+            min_protocol_version: 1,
+            codec_id: 1, // JSON
+            schema_hash: 0,
+        };
+
+        let payload = serde_json::to_vec(&hello).unwrap();
+        let envelope = Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            1, // JSON codec
+            0,
+            routes::HELLO,
+            0,
+            EnvelopeFlags::RELIABLE,
+            Bytes::from(payload),
+        );
+
+        SessionEnvelope::new(session_id, envelope)
+    }
+
+    #[tokio::test]
+    async fn test_server_new() {
+        let (_incoming_tx, incoming_rx) = mpsc::channel(10);
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(10);
+
+        let server = Server::new(incoming_rx, outgoing_tx);
+
+        // Server should start with no connected clients
+        assert_eq!(server.client_count(), 0);
+        assert!(server.get_active_sessions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_server_client_count() {
+        let (mut server, incoming_tx, _outgoing_rx) = create_test_server();
+
+        assert_eq!(server.client_count(), 0);
+
+        // Simulate a client connecting via HELLO
+        let session_id = SessionId::new_v4();
+        let hello_envelope = create_hello_envelope(session_id);
+        incoming_tx.send(hello_envelope).await.unwrap();
+
+        // Process HELLO message
+        let event = server.tick().await.unwrap();
+
+        // Should emit PlayerConnected event
+        assert!(matches!(event, Some(GameEvent::PlayerConnected(_))));
+        assert_eq!(server.client_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_server_get_active_sessions() {
+        let (mut server, incoming_tx, _outgoing_rx) = create_test_server();
+
+        let session1 = SessionId::new_v4();
+        let session2 = SessionId::new_v4();
+
+        // Connect two clients
+        incoming_tx
+            .send(create_hello_envelope(session1))
+            .await
+            .unwrap();
+        incoming_tx
+            .send(create_hello_envelope(session2))
+            .await
+            .unwrap();
+
+        // Process both HELLO messages
+        server.tick().await.unwrap();
+        server.tick().await.unwrap();
+
+        let active_sessions = server.get_active_sessions();
+        assert_eq!(active_sessions.len(), 2);
+        assert!(active_sessions.contains(&session1));
+        assert!(active_sessions.contains(&session2));
+    }
+
+    #[tokio::test]
+    async fn test_server_session_state() {
+        let (mut server, incoming_tx, _outgoing_rx) = create_test_server();
+
+        let session_id = SessionId::new_v4();
+
+        // Before HELLO, session doesn't exist
+        assert!(server.get_session_state(session_id).is_none());
+
+        // Send HELLO
+        incoming_tx
+            .send(create_hello_envelope(session_id))
+            .await
+            .unwrap();
+        server.tick().await.unwrap();
+
+        // After HELLO, session should be in Connected state
+        let state = server.get_session_state(session_id);
+        assert!(state.is_some());
+        assert_eq!(state.unwrap(), ConnectionState::Connected);
+    }
+
+    #[tokio::test]
+    async fn test_server_tick_no_events() {
+        let (_incoming_tx, incoming_rx) = mpsc::channel(10);
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(10);
+        let mut server = Server::new(incoming_rx, outgoing_tx);
+
+        // Close incoming channel to simulate shutdown
+        drop(_incoming_tx);
+
+        // tick() should return None when all channels are closed
+        let result = tokio::time::timeout(Duration::from_millis(100), server.tick()).await;
+        assert!(result.is_ok());
+        let event = result.unwrap().unwrap();
+        assert!(event.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_server_hello_flow() {
+        let (mut server, incoming_tx, mut outgoing_rx) = create_test_server();
+
+        let session_id = SessionId::new_v4();
+
+        // Send HELLO
+        incoming_tx
+            .send(create_hello_envelope(session_id))
+            .await
+            .unwrap();
+
+        // Process HELLO - should return PlayerConnected event
+        let event = server.tick().await.unwrap();
+        assert!(matches!(
+            event,
+            Some(GameEvent::PlayerConnected(sid)) if sid == session_id
+        ));
+
+        // Server should send HELLO_OK back
+        let response = outgoing_rx.try_recv();
+        assert!(response.is_ok());
+        let response_envelope = response.unwrap();
+        assert_eq!(response_envelope.session_id, session_id);
+        assert_eq!(response_envelope.envelope.route_id, routes::HELLO_OK);
+    }
+
+    #[tokio::test]
+    async fn test_server_disconnect_session() {
+        let (mut server, incoming_tx, mut outgoing_rx) = create_test_server();
+
+        let session_id = SessionId::new_v4();
+
+        // Connect client
+        incoming_tx
+            .send(create_hello_envelope(session_id))
+            .await
+            .unwrap();
+        server.tick().await.unwrap();
+
+        assert_eq!(server.client_count(), 1);
+
+        // Drain HELLO_OK message from outgoing channel
+        let _ = outgoing_rx.try_recv();
+
+        // Disconnect the session
+        server
+            .disconnect_session(
+                session_id,
+                DisconnectReason::ServerShutdown,
+                "Test disconnect".to_string(),
+            )
+            .await
+            .unwrap();
+
+        // Session should be removed
+        assert_eq!(server.client_count(), 0);
+
+        // Server should send DISCONNECT message
+        let disconnect_msg = outgoing_rx.try_recv();
+        assert!(disconnect_msg.is_ok());
+        assert_eq!(disconnect_msg.unwrap().envelope.route_id, routes::DISCONNECT);
+    }
+
+    #[tokio::test]
+    async fn test_server_game_message_event() {
+        let (mut server, incoming_tx, _outgoing_rx) = create_test_server();
+
+        let session_id = SessionId::new_v4();
+
+        // Connect client first
+        incoming_tx
+            .send(create_hello_envelope(session_id))
+            .await
+            .unwrap();
+        server.tick().await.unwrap();
+
+        // Send a game message (route_id >= 100)
+        let game_envelope = Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            1, // JSON
+            0,
+            100, // Game message route
+            1,   // msg_id
+            EnvelopeFlags::RELIABLE,
+            Bytes::from_static(b"test game message"),
+        );
+
+        incoming_tx
+            .send(SessionEnvelope::new(session_id, game_envelope))
+            .await
+            .unwrap();
+
+        // Process game message
+        let event = server.tick().await.unwrap();
+
+        // Should emit GameMessage event
+        assert!(matches!(
+            event,
+            Some(GameEvent::GameMessage { session_id: sid, .. }) if sid == session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_server_hello_timeout() {
+        let (_incoming_tx, incoming_rx) = mpsc::channel(10);
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(10);
+
+        // Create config with very short HELLO timeout
+        let config = ServerConfig {
+            hello_timeout: Duration::from_millis(10),
+            ..Default::default()
+        };
+
+        let mut server = Server::with_full_config(
+            incoming_rx,
+            outgoing_tx,
+            CodecType::from_id(1).unwrap(),
+            CodecType::from_id(1).unwrap(),
+            config,
+            None,
+            None,
+            NoCompressor,
+            NoEncryptor,
+        );
+
+        // Manually add a session in Connecting state
+        let session_id = SessionId::new_v4();
+        server.sessions.insert(
+            session_id,
+            SessionState::new(CodecType::from_id(1).unwrap(), 150),
+        );
+
+        assert_eq!(server.client_count(), 1);
+
+        // Wait for timeout + periodic check
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        // Process periodic tasks (should remove timed-out session)
+        let _ = server.tick().await;
+
+        // Session should be removed due to HELLO timeout
+        assert_eq!(server.client_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_server_get_session_rtt() {
+        let (mut server, incoming_tx, _outgoing_rx) = create_test_server();
+
+        let session_id = SessionId::new_v4();
+
+        // Connect client
+        incoming_tx
+            .send(create_hello_envelope(session_id))
+            .await
+            .unwrap();
+        server.tick().await.unwrap();
+
+        // Initially no RTT measured
+        assert!(server.get_session_rtt(session_id).is_none());
+
+        // Simulate PONG response (sets RTT)
+        use mokosh_protocol::messages::Pong;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            - 50; // 50ms ago
+
+        let pong = Pong { timestamp };
+        let pong_payload = serde_json::to_vec(&pong).unwrap();
+        let pong_envelope = Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            1,
+            0,
+            routes::PONG,
+            0,
+            EnvelopeFlags::RELIABLE,
+            Bytes::from(pong_payload),
+        );
+
+        incoming_tx
+            .send(SessionEnvelope::new(session_id, pong_envelope))
+            .await
+            .unwrap();
+        server.tick().await.unwrap();
+
+        // Now RTT should be measured
+        let rtt = server.get_session_rtt(session_id);
+        assert!(rtt.is_some());
+        assert!(rtt.unwrap().as_millis() >= 45); // Approximately 50ms
+    }
+}

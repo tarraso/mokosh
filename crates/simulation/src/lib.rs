@@ -17,14 +17,17 @@
 //! ```rust
 //! use mokosh_simulation::Simulation;
 //! use serde::{Serialize, Deserialize};
+//! use mokosh_protocol_derive::GameMessage;
 //!
-//! #[derive(Clone, Serialize, Deserialize)]
+//! #[derive(Clone, Serialize, Deserialize, GameMessage)]
+//! #[route_id = 1]
 //! struct GameState {
 //!     position: (f32, f32),
 //!     velocity: (f32, f32),
 //! }
 //!
-//! #[derive(Serialize, Deserialize)]
+//! #[derive(Serialize, Deserialize, GameMessage)]
+//! #[route_id = 2]
 //! struct MovementInput {
 //!     direction: (f32, f32),
 //! }
@@ -86,10 +89,13 @@ pub mod server_simulation;
 /// ```rust
 /// # use mokosh_simulation::Simulation;
 /// # use serde::{Serialize, Deserialize};
+/// # use mokosh_protocol_derive::GameMessage;
 /// #
-/// # #[derive(Clone, Serialize, Deserialize)]
+/// # #[derive(Clone, Serialize, Deserialize, GameMessage)]
+/// # #[route_id = 1]
 /// # struct GameState { x: f32 }
-/// # #[derive(Serialize, Deserialize)]
+/// # #[derive(Serialize, Deserialize, GameMessage)]
+/// # #[route_id = 2]
 /// # struct Input { dx: f32 }
 /// #
 /// #[derive(Clone)]

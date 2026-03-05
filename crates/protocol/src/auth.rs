@@ -106,4 +106,76 @@ mod tests {
 
         assert_eq!(methods, vec!["mock".to_string()]);
     }
+
+    #[tokio::test]
+    async fn test_mock_provider_empty_credentials() {
+        let provider = MockAuthProvider;
+
+        let result = provider.authenticate("mock", b"").await.unwrap();
+
+        match result {
+            AuthResult::Success { session_id } => {
+                assert_eq!(session_id, "mock-session-0");
+            }
+            AuthResult::Failure { .. } => panic!("Expected success with empty credentials"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mock_provider_large_credentials() {
+        let provider = MockAuthProvider;
+        let large_creds = vec![0u8; 1024];
+
+        let result = provider.authenticate("mock", &large_creds).await.unwrap();
+
+        match result {
+            AuthResult::Success { session_id } => {
+                assert_eq!(session_id, "mock-session-1024");
+            }
+            AuthResult::Failure { .. } => panic!("Expected success with large credentials"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_auth_result_clone() {
+        let success = AuthResult::Success {
+            session_id: "test-123".to_string(),
+        };
+        let cloned = success.clone();
+
+        assert_eq!(success, cloned);
+
+        let failure = AuthResult::Failure {
+            error_message: "test error".to_string(),
+        };
+        let cloned_failure = failure.clone();
+
+        assert_eq!(failure, cloned_failure);
+    }
+
+    #[tokio::test]
+    async fn test_mock_provider_concurrent_auth() {
+        let provider = std::sync::Arc::new(MockAuthProvider);
+
+        let mut handles = vec![];
+        for i in 0..10 {
+            let provider_clone = provider.clone();
+            let handle = tokio::spawn(async move {
+                let creds = format!("user-{}", i);
+                provider_clone
+                    .authenticate("mock", creds.as_bytes())
+                    .await
+                    .unwrap()
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            let result = handle.await.unwrap();
+            match result {
+                AuthResult::Success { .. } => {}
+                AuthResult::Failure { .. } => panic!("Expected all concurrent auth to succeed"),
+            }
+        }
+    }
 }

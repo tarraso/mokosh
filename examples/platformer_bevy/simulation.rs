@@ -3,6 +3,8 @@
 //! Shared simulation for both client (prediction) and server (authoritative).
 //! Implements deterministic 2D physics with gravity, jumping, collision detection.
 
+#![allow(dead_code)]
+
 use ::mokosh_protocol::SessionId;
 #[cfg(feature = "native")]
 use ::mokosh_simulation::Simulation;

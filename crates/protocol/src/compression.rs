@@ -332,4 +332,116 @@ mod tests {
 
         assert_eq!(data.as_slice(), decompressed.as_ref());
     }
+
+    #[test]
+    fn test_lz4_compressed_data_too_short() {
+        let compressor = Lz4Compressor::new();
+        let too_short = b"\x00\x00"; // Less than 4 bytes
+
+        let result = compressor.decompress(too_short);
+        assert!(result.is_err());
+
+        if let Err(CompressionError::DecompressionFailed(msg)) = result {
+            assert!(msg.contains("too short"));
+        } else {
+            panic!("Expected DecompressionFailed error");
+        }
+    }
+
+    #[test]
+    fn test_compression_type_names() {
+        assert_eq!(CompressionType::None.name(), "None");
+        assert_eq!(CompressionType::Zstd.name(), "Zstd");
+        assert_eq!(CompressionType::Lz4.name(), "Lz4");
+    }
+
+    #[test]
+    fn test_zstd_random_data() {
+        let compressor = ZstdCompressor::new();
+        // Random data is typically incompressible
+        let data = (0..1000).map(|i| (i * 17 + 13) as u8).collect::<Vec<_>>();
+
+        let compressed = compressor.compress(&data).unwrap();
+        let decompressed = compressor.decompress(&compressed).unwrap();
+
+        assert_eq!(data.as_slice(), decompressed.as_ref());
+    }
+
+    #[test]
+    fn test_lz4_random_data() {
+        let compressor = Lz4Compressor::new();
+        // Random data is typically incompressible
+        let data = (0..1000).map(|i| (i * 17 + 13) as u8).collect::<Vec<_>>();
+
+        let compressed = compressor.compress(&data).unwrap();
+        let decompressed = compressor.decompress(&compressed).unwrap();
+
+        assert_eq!(data.as_slice(), decompressed.as_ref());
+    }
+
+    #[test]
+    fn test_zstd_invalid_compressed_data() {
+        let compressor = ZstdCompressor::new();
+        let invalid_data = b"this is not zstd compressed data!";
+
+        let result = compressor.decompress(invalid_data);
+        assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod basic_tests {
+    use super::*;
+
+    #[test]
+    fn test_no_compressor() {
+        let compressor = NoCompressor;
+        let data = b"Hello, Godot!";
+
+        let compressed = compressor.compress(data).unwrap();
+        let decompressed = compressor.decompress(&compressed).unwrap();
+
+        // NoCompressor should pass through unchanged
+        assert_eq!(data.as_slice(), compressed.as_ref());
+        assert_eq!(data.as_slice(), decompressed.as_ref());
+        assert_eq!(compressor.compression_type(), CompressionType::None);
+    }
+
+    #[test]
+    fn test_no_compressor_empty() {
+        let compressor = NoCompressor;
+        let data = b"";
+
+        let compressed = compressor.compress(data).unwrap();
+        let decompressed = compressor.decompress(&compressed).unwrap();
+
+        assert_eq!(data.as_slice(), compressed.as_ref());
+        assert_eq!(data.as_slice(), decompressed.as_ref());
+    }
+
+    #[test]
+    fn test_no_compressor_large_data() {
+        let compressor = NoCompressor;
+        let data = vec![0xAB; 100_000];
+
+        let compressed = compressor.compress(&data).unwrap();
+        let decompressed = compressor.decompress(&compressed).unwrap();
+
+        assert_eq!(data.as_slice(), compressed.as_ref());
+        assert_eq!(data.as_slice(), decompressed.as_ref());
+    }
+
+    #[test]
+    fn test_compression_type_eq() {
+        assert_eq!(CompressionType::None, CompressionType::None);
+        assert_ne!(CompressionType::None, CompressionType::Zstd);
+        assert_ne!(CompressionType::Zstd, CompressionType::Lz4);
+    }
+
+    #[test]
+    fn test_compression_type_names() {
+        assert_eq!(CompressionType::None.name(), "None");
+        assert_eq!(CompressionType::Zstd.name(), "Zstd");
+        assert_eq!(CompressionType::Lz4.name(), "Lz4");
+    }
 }

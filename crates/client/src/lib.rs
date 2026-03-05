@@ -6,7 +6,7 @@
 //!
 //! ```no_run
 //! use mokosh_client::Client;
-//! use mokosh_client::compat::mpsc;
+//! use mokosh_client::mpsc;
 //!
 //! #[tokio::main]
 //! async fn main() {
@@ -295,9 +295,16 @@ where
     /// # Example
     ///
     /// ```no_run
+    /// # use mokosh_client::{Client, mpsc};
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// # let (_incoming_tx, incoming_rx) = mpsc::channel(100);
+    /// # let (outgoing_tx, _outgoing_rx) = mpsc::channel(100);
+    /// # let client = Client::new(incoming_rx, outgoing_tx);
     /// if let Some(rtt) = client.get_last_rtt() {
     ///     println!("Current RTT: {}ms", rtt.as_millis());
     /// }
+    /// # }
     /// ```
     pub fn get_last_rtt(&self) -> Option<Duration> {
         self.last_rtt
@@ -364,10 +371,18 @@ where
 
         loop {
             tokio::select! {
-                Some(envelope) = self.incoming_rx.recv() => {
-                    // Update last received time
-                    self.last_received = Instant::now();
-                    self.handle_envelope(envelope).await;
+                result = self.incoming_rx.recv() => {
+                    match result {
+                        Some(envelope) => {
+                            // Update last received time
+                            self.last_received = Instant::now();
+                            self.handle_envelope(envelope).await;
+                        }
+                        None => {
+                            tracing::info!("Client shutting down: incoming channel closed");
+                            break;
+                        }
+                    }
                 }
 
                 _ = interval.tick() => {
@@ -376,11 +391,6 @@ where
                         tracing::error!(error = %e, "Periodic task error");
                         break;
                     }
-                }
-
-                else => {
-                    tracing::info!("Client shutting down: incoming channel closed");
-                    break;
                 }
             }
         }
@@ -881,7 +891,7 @@ mod tests {
             Bytes::from_static(b"test"),
         );
 
-        let client_handle = Client::new(mpsc::channel(1).1, outgoing_tx);
+        let mut client_handle = Client::new(mpsc::channel(1).1, outgoing_tx);
         client_handle.send(test_envelope.clone()).await.unwrap();
 
         let received = outgoing_rx.recv().await.unwrap();
