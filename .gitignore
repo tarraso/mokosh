@@ -34,13 +34,16 @@ data_*/
 *.a
 *.lib
 
-# WASM artifacts
-examples/web/pkg/
-*.wasm
-*.d.ts
+# WASM artifacts (Trunk)
+*/web/dist/
+*/web/pkg/
 
 # Logs
 *.log
+
+# Coverage
+*.profraw
+*.profdata
 
 # OS
 .DS_Store

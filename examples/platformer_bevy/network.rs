@@ -5,8 +5,10 @@
 
 use bevy::prelude::*;
 use bytes::Bytes;
+use futures::{SinkExt, StreamExt};
 use mokosh_client::mpsc;
 use mokosh_client::transport::browser_websocket::BrowserWebSocketClient;
+use mokosh_examples_shared::platformer::{GameState, PlayerInput};
 use mokosh_protocol::{
     messages::{routes, Hello, HelloOk},
     Envelope, EnvelopeFlags, GameMessage, Transport, CURRENT_PROTOCOL_VERSION,
@@ -14,7 +16,6 @@ use mokosh_protocol::{
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use wasm_bindgen_futures;
 
-use crate::simulation::{GameState, PlayerInput};
 use crate::{BoxEntity, GameEntities, LocalSessionId, PlayerEntity, WINDOW_HEIGHT};
 
 const SERVER_URL: &str = "ws://127.0.0.1:8080";
@@ -101,7 +102,7 @@ async fn connect_to_server(
 
     // Wait for HELLO_OK (no timeout in WASM for simplicity)
     let session_id = loop {
-        if let Some(envelope) = incoming_rx.recv().await {
+        if let Some(envelope) = incoming_rx.next().await {
             if envelope.route_id == routes::HELLO_OK {
                 let hello_ok: HelloOk = serde_json::from_slice(&envelope.payload)
                     .map_err(|e| format!("Failed to parse HELLO_OK: {}", e))?;
@@ -118,7 +119,7 @@ async fn connect_to_server(
 
     // Forward game messages (route_id >= 100) to Bevy
     wasm_bindgen_futures::spawn_local(async move {
-        while let Some(envelope) = incoming_rx.recv().await {
+        while let Some(envelope) = incoming_rx.next().await {
             if envelope.route_id >= 100 {
                 let _ = game_state_tx.send(envelope).await;
             }
@@ -234,8 +235,8 @@ pub fn network_receive_system(
         if let Some(mut rx_guard) = net.game_state_rx.try_lock() {
             // Process all available messages (non-blocking)
             loop {
-                match rx_guard.try_recv() {
-                    Ok(envelope) => {
+                match rx_guard.try_next() {
+                    Ok(Some(envelope)) => {
                         if envelope.route_id == 101 {
                             if let Ok(game_state) =
                                 serde_json::from_slice::<GameState>(&envelope.payload)
@@ -343,8 +344,12 @@ pub fn network_receive_system(
                             }
                         }
                     }
+                    Ok(None) => {
+                        // Channel closed
+                        break;
+                    }
                     Err(_) => {
-                        // Channel empty or closed - no more messages available now
+                        // Channel empty - no more messages available now
                         break;
                     }
                 }

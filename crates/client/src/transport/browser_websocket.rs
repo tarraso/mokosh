@@ -6,6 +6,7 @@
 use super::Transport;
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::SinkExt;
 use js_sys::{ArrayBuffer, Uint8Array};
 use mokosh_protocol::Envelope;
 use std::cell::RefCell;

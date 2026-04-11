@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bevy Platformer - WASM Client</title>
+    <link data-trunk rel="rust" data-wasm-opt="z" data-bin="bevy_platformer_client_wasm" />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #1a1a1a;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+
+        h1 {
+            margin: 20px 0;
+            font-size: 2em;
+            text-align: center;
+        }
+
+        #info {
+            max-width: 800px;
+            margin: 10px auto;
+            padding: 20px;
+            background-color: #2a2a2a;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        #info h2 {
+            margin-top: 0;
+            color: #4a9eff;
+        }
+
+        #info p {
+            line-height: 1.6;
+        }
+
+        kbd {
+            background-color: #3a3a3a;
+            border: 1px solid #555;
+            border-radius: 3px;
+            padding: 2px 6px;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+
+        #bevy-canvas {
+            display: block;
+            margin: 20px auto;
+            border: 2px solid #4a9eff;
+            border-radius: 4px;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.5);
+        }
+
+        #loading {
+            text-align: center;
+            font-size: 1.2em;
+            margin: 20px;
+        }
+
+        .spinner {
+            border: 4px solid #3a3a3a;
+            border-top: 4px solid #4a9eff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .control-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            background-color: #333;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎮 Bevy 2D Platformer (WASM)</h1>
+
+    <div id="info">
+        <h2>Controls</h2>
+        <div class="controls">
+            <div class="control-item">
+                <span>Move Left:</span>
+                <span><kbd>A</kbd> or <kbd>←</kbd></span>
+            </div>
+            <div class="control-item">
+                <span>Move Right:</span>
+                <span><kbd>D</kbd> or <kbd>→</kbd></span>
+            </div>
+            <div class="control-item">
+                <span>Jump:</span>
+                <span><kbd>Space</kbd></span>
+            </div>
+            <div class="control-item">
+                <span>Fullscreen:</span>
+                <span><kbd>F11</kbd></span>
+            </div>
+        </div>
+
+        <h2>How to Play</h2>
+        <p>
+            <strong>Blue square</strong> is you! Other players appear as <strong>red squares</strong>.
+            Push the <strong>brown boxes</strong> around and jump on them to reach higher places.
+        </p>
+        <p>
+            Server must be running at <code>ws://127.0.0.1:8080</code>. Start it with:
+            <br><code style="background: #1a1a1a; padding: 4px 8px; border-radius: 3px; display: inline-block; margin-top: 5px;">cargo run --example bevy_platformer_server</code>
+        </p>
+    </div>
+
+    <div id="loading">
+        <div class="spinner"></div>
+        <p>Loading WASM module...</p>
+    </div>
+
+    <canvas id="bevy-canvas"></canvas>
+
+    <!-- Trunk will automatically inject the WASM loader here -->
+</body>
+</html>

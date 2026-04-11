@@ -7,8 +7,8 @@ members = [
     "crates/protocol-derive",
     "crates/simulation",
     "crates/godot-bindings",
+    "crates/examples-shared",
 ]
-exclude = ["examples/platformer_bevy"]
 default-members = ["."]
 
 [package]
@@ -40,21 +40,24 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 mokosh-protocol-derive = { path = "crates/protocol-derive" }
+mokosh-examples-shared = { path = "crates/examples-shared" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"
 bevy = "0.18"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
-# WASM-specific dependencies for browser examples (no tokio needed)
+# WASM-specific dependencies for browser examples
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
 wasm-logger = "0.2"
 log = "0.4"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 instant = { version = "0.1", features = ["wasm-bindgen"] }
-# futures is now used instead of tokio for WASM
 
 [[example]]
 name = "platformer_server"

@@ -11,16 +11,14 @@
 //! cargo run --example bevy_platformer_client
 //! ```
 
-mod simulation;
-
 use bevy::prelude::*;
 use bytes::Bytes;
 use mokosh_client::transport::websocket::WebSocketClient;
+use mokosh_examples_shared::platformer::{GameState, PlayerInput, GROUND_Y};
 use mokosh_protocol::{
     messages::{routes, Hello, HelloOk},
     Envelope, EnvelopeFlags, GameMessage, Transport, CURRENT_PROTOCOL_VERSION,
 };
-use simulation::{GameState, PlayerInput, GROUND_Y};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;

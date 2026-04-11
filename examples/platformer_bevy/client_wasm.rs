@@ -4,18 +4,15 @@
 //!
 //! Build with:
 //! ```bash
-//! cargo build --example bevy_platformer_client_wasm --target wasm32-unknown-unknown --release --no-default-features --features wasm
-//! wasm-bindgen --out-dir examples/web/pkg --target web target/wasm32-unknown-unknown/release/examples/bevy_platformer_client_wasm.wasm
+//! cargo build --example bevy_platformer_client_wasm --target wasm32-unknown-unknown --release --features wasm
+//! wasm-bindgen --out-dir examples/platformer_bevy/web/pkg --target web target/wasm32-unknown-unknown/release/examples/bevy_platformer_client_wasm.wasm
 //! ```
-
-#[path = "simulation.rs"]
-mod simulation;
 
 #[path = "network.rs"]
 mod network;
 
 use bevy::prelude::*;
-use simulation::{PlayerInput, GROUND_Y};
+use mokosh_examples_shared::platformer::{PlayerInput, GROUND_Y};
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 

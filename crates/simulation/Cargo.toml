@@ -11,7 +11,6 @@ mokosh-protocol = { path = "../protocol", default-features = false }
 mokosh-protocol-derive = { path = "../protocol-derive" }
 serde = { workspace = true }
 thiserror.workspace = true
-tokio = { workspace = true }
 tracing.workspace = true
 
 [dev-dependencies]

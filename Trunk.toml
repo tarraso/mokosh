@@ -1,0 +1,32 @@
+[build]
+# Target the WASM example
+target = "examples/platformer_bevy/client_wasm.rs"
+
+# Output to the web directory
+dist = "examples/platformer_bevy/web/dist"
+
+# Enable release mode for better performance
+release = true
+
+# Public URL path
+public_url = "/"
+
+[watch]
+# Watch these paths for changes
+watch = ["examples/platformer_bevy", "crates"]
+# Ignore dist directory
+ignore = ["examples/platformer_bevy/web/dist"]
+
+[serve]
+# Dev server configuration
+address = "127.0.0.1"
+port = 8000
+# Open browser automatically
+open = false
+# Enable WebSocket for auto-reload
+ws_protocol = "ws"
+
+[clean]
+# Directories to clean
+dist = "examples/platformer_bevy/web/dist"
+cargo = false

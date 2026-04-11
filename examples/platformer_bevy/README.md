@@ -28,10 +28,10 @@ Multiplayer 2D platformer built with **Bevy** game engine and **Mokosh** network
 - **WebSocket Server** on port 8080
 - **Physics Simulation** at 60 FPS
 - **Event-based API** (connect/disconnect/messages)
-- **Shared Simulation** (reuses `../platformer/simulation.rs`)
+- **Shared Simulation** (reuses `mokosh-examples-shared` crate)
 
-### Simulation (`../platformer/simulation.rs`)
-- **PlatformerSimulation**: Shared physics logic
+### Simulation (`mokosh-examples-shared::platformer`)
+- **PlatformerSimulation**: Shared physics logic (WASM-compatible)
 - **Messages**:
   - `PlayerInput` (route_id=100): Client → Server
   - `GameState` (route_id=101): Server → Client
@@ -39,20 +39,39 @@ Multiplayer 2D platformer built with **Bevy** game engine and **Mokosh** network
 
 ## Quick Start
 
-### Terminal 1: Start Server
+### Native Clients
+
+**Terminal 1: Start Server**
 ```bash
-cargo run --example bevy_platformer_server
+cargo run --example bevy_platformer_server --features native
 ```
 
-### Terminal 2: Start Client
+**Terminal 2: Start Native Client**
 ```bash
-cargo run --example bevy_platformer_client
+cargo run --example bevy_platformer_client --features native
 ```
 
-### Terminal 3: Start Second Client (Optional)
+**Terminal 3: Start Second Client (Optional)**
 ```bash
-cargo run --example bevy_platformer_client
+cargo run --example bevy_platformer_client --features native
 ```
+
+### Web Client (WASM)
+
+**Terminal 1: Start Server**
+```bash
+cargo run --example bevy_platformer_server --features native
+```
+
+**Terminal 2: Build and Serve WASM Client (Trunk)**
+```bash
+trunk serve
+```
+
+Then open **http://localhost:8000** in your browser!
+
+> **Note**: Trunk automatically builds, optimizes, and serves the WASM client with hot-reload support.
+> Install with: `cargo install trunk`
 
 ## Controls
 

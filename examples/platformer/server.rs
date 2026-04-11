@@ -12,12 +12,9 @@
 //! cargo run --example platformer_server
 //! ```
 
-mod simulation;
-
+use mokosh_examples_shared::platformer::{PlatformerSimulation, PlayerInput, Simulation};
 use mokosh_server::transport::websocket::WebSocketServer;
 use mokosh_server::{GameEvent, Server};
-use mokosh_simulation::Simulation;
-use simulation::{PlatformerSimulation, PlayerInput};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::mpsc;

@@ -1,0 +1,13 @@
+[package]
+name = "mokosh-examples-shared"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+mokosh-protocol = { path = "../protocol", default-features = false }
+mokosh-protocol-derive = { path = "../protocol-derive" }
+mokosh-simulation = { path = "../simulation" }
+serde = { workspace = true }
