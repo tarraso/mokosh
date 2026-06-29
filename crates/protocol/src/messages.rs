@@ -33,6 +33,23 @@ pub mod routes {
 
     /// PONG message (bidirectional): keepalive response (future)
     pub const PONG: u16 = 31;
+
+    /// ACK message (bidirectional): acknowledges received reliable messages.
+    ///
+    /// ACKs are themselves sent unreliably (no reliability flags, msg_id = 0)
+    /// so they never trigger acknowledgement of acknowledgements.
+    pub const ACK: u16 = 40;
+}
+
+/// Reliability channel identifiers carried in an [`Ack`].
+///
+/// Endpoints maintain two independent sequence spaces per peer so the handshake
+/// can be made reliable without colliding with game traffic.
+pub mod ack_channel {
+    /// Control channel (route_id < 100): HELLO/AUTH handshake.
+    pub const CONTROL: u8 = 0;
+    /// Game channel (route_id >= 100): application messages.
+    pub const GAME: u8 = 1;
 }
 
 /// Game messages start from route_id >= 100
@@ -55,6 +72,12 @@ pub struct Hello {
 
     /// Schema hash for message structure compatibility
     pub schema_hash: u64,
+
+    /// Whether the client has the reliability layer enabled. The server rejects
+    /// the handshake on mismatch (both ends must agree). Defaults to `false` for
+    /// backward-compatible decoding of older peers.
+    #[serde(default)]
+    pub reliability: bool,
 }
 
 /// HELLO_OK message sent by server when handshake is accepted
@@ -74,6 +97,11 @@ pub struct HelloOk {
 
     /// Available authentication methods (e.g., ["steam", "google", "passcode"])
     pub available_auth_methods: Vec<String>,
+
+    /// Whether the server has the reliability layer enabled (echoes the
+    /// negotiated state). Defaults to `false` for backward-compatible decoding.
+    #[serde(default)]
+    pub reliability: bool,
 }
 
 /// HELLO_ERROR message sent by server when handshake is rejected
@@ -109,6 +137,9 @@ pub enum ErrorReason {
 
     /// Server is undergoing maintenance
     Maintenance,
+
+    /// Client and server disagree on whether the reliability layer is enabled
+    ReliabilityMismatch,
 }
 
 impl std::fmt::Display for ErrorReason {
@@ -118,6 +149,7 @@ impl std::fmt::Display for ErrorReason {
             ErrorReason::SchemaMismatch => write!(f, "SchemaMismatch"),
             ErrorReason::ServerFull => write!(f, "ServerFull"),
             ErrorReason::Maintenance => write!(f, "Maintenance"),
+            ErrorReason::ReliabilityMismatch => write!(f, "ReliabilityMismatch"),
         }
     }
 }
@@ -193,6 +225,9 @@ pub enum DisconnectReason {
 
     /// Protocol violation (generic)
     ProtocolViolation,
+
+    /// Peer fell too far behind on acknowledgements (send window exceeded)
+    Overloaded,
 }
 
 impl std::fmt::Display for DisconnectReason {
@@ -207,6 +242,7 @@ impl std::fmt::Display for DisconnectReason {
             DisconnectReason::RateLimitExceeded => write!(f, "RateLimitExceeded"),
             DisconnectReason::MessageTooOld => write!(f, "MessageTooOld"),
             DisconnectReason::ProtocolViolation => write!(f, "ProtocolViolation"),
+            DisconnectReason::Overloaded => write!(f, "Overloaded"),
         }
     }
 }
@@ -229,6 +265,26 @@ pub struct Pong {
     pub timestamp: u64,
 }
 
+/// ACK message acknowledging received reliable messages on one channel.
+///
+/// Uses a cumulative acknowledgement plus a selective bitmap (SACK-style) so a
+/// single ACK can confirm many messages and tolerate reordering / gaps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ack {
+    /// Which sequence space this ACK refers to (see [`routes::ACK`] and
+    /// [`ack_channel`]): `0` = control, `1` = game.
+    pub channel: u8,
+
+    /// Cumulative acknowledgement: every sequence number `<= cumulative_ack`
+    /// has been received.
+    pub cumulative_ack: u64,
+
+    /// Selective acknowledgement bitmap. Bit `i` set means
+    /// `cumulative_ack + 1 + i` was received (covers a 64-wide window above the
+    /// cumulative point — see `reliability::ACK_WINDOW`).
+    pub ack_bitmap: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +296,7 @@ mod tests {
             min_protocol_version: 0x0100,
             codec_id: 1,
             schema_hash: 0x1234567890ABCDEF,
+            reliability: false,
         };
 
         let json = serde_json::to_string(&hello).unwrap();
@@ -255,6 +312,7 @@ mod tests {
             session_id: String::new(),
             auth_required: false,
             available_auth_methods: vec![],
+            reliability: false,
         };
 
         let json = serde_json::to_string(&hello_ok).unwrap();

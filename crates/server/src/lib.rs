@@ -11,11 +11,13 @@ use mokosh_protocol::{
     compression::{CompressionType, Compressor, NoCompressor},
     encryption::{EncryptionType, Encryptor, NoEncryptor},
     messages::{
-        routes, AuthRequest, AuthResponse, Disconnect, DisconnectReason, ErrorReason, Hello,
+        routes, Ack, AuthRequest, AuthResponse, Disconnect, DisconnectReason, ErrorReason, Hello,
         HelloError, HelloOk, Ping, Pong, GAME_MESSAGES_START,
     },
-    negotiate_version, CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry,
-    SessionEnvelope, SessionId, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
+    negotiate_version,
+    reliability::{ReceiveOutcome, ReliabilityConfig, ReliabilityMode, ReliabilityState, MonoMillisecond},
+    CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, SessionEnvelope,
+    SessionId, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -36,6 +38,16 @@ pub enum GameEvent {
     GameMessage {
         session_id: SessionId,
         envelope: Envelope,
+    },
+
+    /// A reliable message could not be delivered before its TTL / retry cap
+    /// expired and was given up on. Only emitted when reliability is enabled.
+    MessageDropped {
+        session_id: SessionId,
+        /// Sequence number (envelope `msg_id`) of the dropped message.
+        seq: u64,
+        /// Route of the dropped message.
+        route_id: u16,
     },
 }
 
@@ -63,8 +75,20 @@ struct SessionState {
     /// Codec to use for game messages (set by client during HELLO)
     game_codec: CodecType,
 
-    /// Message ID counter for game messages to this client
+    /// Message ID counter for game messages (legacy path; reliability disabled)
     msg_id_counter: u64,
+
+    /// Contiguous sequence for reliable game messages (reliability enabled)
+    reliable_game_seq: u64,
+
+    /// Sequence for `UnreliableSequenced` game messages (independent space)
+    sequenced_game_seq: u64,
+
+    /// Message ID counter for reliable control messages (handshake/auth) to this client
+    control_msg_id_counter: u64,
+
+    /// Per-session reliability state (None unless reliability is enabled)
+    reliability: Option<ReliabilityState>,
 
     /// Last received msg_id (for replay protection and out-of-order detection)
     last_received_msg_id: u64,
@@ -81,7 +105,11 @@ struct SessionState {
 
 impl SessionState {
     /// Creates a new session state for a newly connected client
-    fn new(game_codec: CodecType, rate_limit_burst: u32) -> Self {
+    fn new(
+        game_codec: CodecType,
+        rate_limit_burst: u32,
+        reliability_cfg: Option<&ReliabilityConfig>,
+    ) -> Self {
         let now = Instant::now();
         Self {
             state: ConnectionState::Connecting,
@@ -90,6 +118,10 @@ impl SessionState {
             last_rtt: None,
             game_codec,
             msg_id_counter: 1,
+            reliable_game_seq: 1,
+            sequenced_game_seq: 1,
+            control_msg_id_counter: 1,
+            reliability: reliability_cfg.map(|cfg| ReliabilityState::new(cfg.clone())),
             last_received_msg_id: 0,
             received_recent_ids: HashSet::new(),
             rate_limit_tokens: rate_limit_burst as f64,
@@ -124,6 +156,14 @@ pub struct ServerConfig {
 
     /// Burst capacity for rate limiting (max accumulated tokens)
     pub rate_limit_burst: u32,
+
+    /// Reliability layer configuration. `None` (default) disables it entirely
+    /// — used with reliable transports (WebSocket). Set to `Some` when running
+    /// over an unreliable transport (UDP) to enable ACK + retransmission.
+    pub reliability: Option<ReliabilityConfig>,
+
+    /// How often the retransmission/ACK timer fires when reliability is enabled.
+    pub retransmit_tick: Duration,
 }
 
 impl Default for ServerConfig {
@@ -137,6 +177,8 @@ impl Default for ServerConfig {
             message_ttl: Duration::from_secs(60), // Reject messages older than 60s
             max_messages_per_second: 100, // 100 msg/s steady state
             rate_limit_burst: 150, // Allow bursts up to 150 tokens
+            reliability: None,    // Disabled by default (zero-cost)
+            retransmit_tick: Duration::from_millis(25),
         }
     }
 }
@@ -195,6 +237,12 @@ where
 
     /// Interval for periodic tasks (keepalive, timeouts)
     periodic_interval: tokio::time::Interval,
+
+    /// Interval for reliability retransmission/ACK flushing (Some when reliability enabled)
+    retransmit_interval: Option<tokio::time::Interval>,
+
+    /// Monotonic epoch for converting wall-clock into reliability [`MonoMillisecond`]s
+    reliability_epoch: Instant,
 }
 
 // Default implementation (no compression, no encryption)
@@ -282,6 +330,12 @@ where
         // Create interval for periodic tasks (keepalive, timeout checks)
         let periodic_interval = tokio::time::interval(Duration::from_secs(1));
 
+        // Create the retransmission timer only when reliability is enabled (zero-cost otherwise)
+        let retransmit_interval = config
+            .reliability
+            .as_ref()
+            .map(|_| tokio::time::interval(config.retransmit_tick));
+
         Self {
             incoming_rx,
             outgoing_tx,
@@ -296,6 +350,8 @@ where
             event_tx,
             event_rx,
             periodic_interval,
+            retransmit_interval,
+            reliability_epoch: Instant::now(),
         }
     }
 
@@ -451,6 +507,12 @@ where
     /// }
     /// ```
     pub async fn tick(&mut self) -> Result<Option<GameEvent>, ServerError> {
+        // Fires only when reliability is enabled; otherwise resolves to `None`
+        // immediately and the branch is skipped (zero-cost when disabled).
+        let retransmit_fut = futures::future::OptionFuture::from(
+            self.retransmit_interval.as_mut().map(|iv| iv.tick()),
+        );
+
         tokio::select! {
             // Priority 1: Check for pending game events
             Some(event) = self.event_rx.recv() => {
@@ -471,12 +533,77 @@ where
                 Ok(self.event_rx.try_recv().ok())
             }
 
+            // Priority 4: Reliability retransmission / ACK flushing (if enabled)
+            Some(_) = retransmit_fut => {
+                self.handle_reliability_tick().await?;
+                Ok(self.event_rx.try_recv().ok())
+            }
+
             else => {
                 // All channels closed
                 tracing::info!("Server shutting down: all channels closed");
                 Ok(None)
             }
         }
+    }
+
+    /// Current reliability timestamp (monotonic milliseconds since construction).
+    #[inline]
+    fn now_mono(&self) -> MonoMillisecond {
+        MonoMillisecond::from_millis(self.reliability_epoch.elapsed().as_millis() as u64)
+    }
+
+    /// Drives retransmission, expiry reporting and ACK flushing for all sessions.
+    async fn handle_reliability_tick(&mut self) -> Result<(), ServerError> {
+        let now = self.now_mono();
+
+        let mut retransmits: Vec<(SessionId, Envelope)> = Vec::new();
+        let mut acks: Vec<(SessionId, Ack)> = Vec::new();
+        let mut dropped: Vec<(SessionId, u64, u16)> = Vec::new();
+
+        for (sid, st) in self.sessions.iter_mut() {
+            if let Some(rel) = st.reliability.as_mut() {
+                // Expire first so timed-out messages are not retransmitted.
+                for ex in rel.poll_expired(now) {
+                    dropped.push((*sid, ex.seq, ex.route_id));
+                }
+                for env in rel.poll_retransmits(now) {
+                    retransmits.push((*sid, env));
+                }
+                for ack in rel.build_acks(now) {
+                    acks.push((*sid, ack));
+                }
+            }
+        }
+
+        for (sid, env) in retransmits {
+            let _ = self.outgoing_tx.send(SessionEnvelope::new(sid, env)).await;
+        }
+        for (sid, ack) in acks {
+            let payload = self
+                .control_codec
+                .encode(&ack)
+                .map_err(|e| ServerError::CodecError(e.to_string()))?;
+            let env = Envelope::new_simple(
+                CURRENT_PROTOCOL_VERSION,
+                self.control_codec.id(),
+                0,
+                routes::ACK,
+                0,
+                EnvelopeFlags::empty(),
+                payload,
+            );
+            let _ = self.outgoing_tx.send(SessionEnvelope::new(sid, env)).await;
+        }
+        for (session_id, seq, route_id) in dropped {
+            let _ = self.event_tx.send(GameEvent::MessageDropped {
+                session_id,
+                seq,
+                route_id,
+            });
+        }
+
+        Ok(())
     }
 
     /// Broadcasts a message to all connected clients
@@ -627,7 +754,11 @@ where
             tracing::info!(session = %session_id, "New client session created");
             self.sessions.insert(
                 session_id,
-                SessionState::new(self.default_game_codec, self.config.rate_limit_burst),
+                SessionState::new(
+                    self.default_game_codec,
+                    self.config.rate_limit_burst,
+                    self.config.reliability.as_ref(),
+                ),
             );
         }
 
@@ -662,6 +793,61 @@ where
         session_id: SessionId,
         envelope: Envelope,
     ) -> Result<(), ServerError> {
+        // ACKs are always unreliable and handled directly (never acknowledged).
+        if envelope.route_id == routes::ACK {
+            return self.handle_ack(session_id, envelope);
+        }
+
+        // Reliable control messages (HELLO/AUTH) go through the control-channel
+        // receiver for dedup + ACK scheduling before dispatch. Gate on SEQUENCED:
+        // only HELLO/AUTH are sent ReliableOrdered; best-effort control (PING/PONG/
+        // DISCONNECT) carries a bare RELIABLE bit and must NOT be acknowledged.
+        let sequenced = envelope.flags.contains(EnvelopeFlags::SEQUENCED);
+        let has_reliability = self
+            .sessions
+            .get(&session_id)
+            .map(|s| s.reliability.is_some())
+            .unwrap_or(false);
+
+        if sequenced && has_reliability {
+            let now = self.now_mono();
+            let outcome = {
+                let st = self.sessions.get_mut(&session_id).unwrap();
+                st.reliability
+                    .as_mut()
+                    .unwrap()
+                    .control
+                    .receiver
+                    .on_receive(envelope, now)
+            };
+            match outcome {
+                ReceiveOutcome::Deliver(e) => self.dispatch_control(session_id, e).await,
+                ReceiveOutcome::DeliverMany(es) => {
+                    for e in es {
+                        self.dispatch_control(session_id, e).await?;
+                    }
+                    Ok(())
+                }
+                ReceiveOutcome::Drop | ReceiveOutcome::DropDuplicate => Ok(()),
+                ReceiveOutcome::BufferOverflow => {
+                    self.disconnect_protocol_violation(
+                        session_id,
+                        "control ordering buffer overflow",
+                    )
+                    .await
+                }
+            }
+        } else {
+            self.dispatch_control(session_id, envelope).await
+        }
+    }
+
+    /// Dispatches a (deduplicated) control message to its handler.
+    async fn dispatch_control(
+        &mut self,
+        session_id: SessionId,
+        envelope: Envelope,
+    ) -> Result<(), ServerError> {
         match envelope.route_id {
             routes::HELLO => self.handle_hello(session_id, envelope).await,
             routes::AUTH_REQUEST => self.handle_auth_request(session_id, envelope).await,
@@ -675,12 +861,135 @@ where
         }
     }
 
+    /// Processes an incoming ACK, clearing acknowledged outstanding messages.
+    fn handle_ack(&mut self, session_id: SessionId, envelope: Envelope) -> Result<(), ServerError> {
+        let ack: Ack = self
+            .control_codec
+            .decode(&envelope.payload)
+            .map_err(|e| ServerError::InvalidMessage(format!("Failed to parse ACK: {}", e)))?;
+        let now = self.now_mono();
+        if let Some(st) = self.sessions.get_mut(&session_id) {
+            if let Some(rel) = st.reliability.as_mut() {
+                if let Some(ch) = rel.channel_by_id(ack.channel) {
+                    ch.sender.on_ack(&ack, now);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Disconnects a session for a protocol violation (best-effort notification).
+    async fn disconnect_protocol_violation(
+        &mut self,
+        session_id: SessionId,
+        message: &str,
+    ) -> Result<(), ServerError> {
+        let disconnect = Disconnect {
+            reason: DisconnectReason::ProtocolViolation,
+            message: message.to_string(),
+        };
+        if let Ok(payload) = self.control_codec.encode(&disconnect) {
+            let env = Envelope::new_simple(
+                CURRENT_PROTOCOL_VERSION,
+                self.control_codec.id(),
+                0,
+                routes::DISCONNECT,
+                0,
+                EnvelopeFlags::RELIABLE,
+                payload,
+            );
+            let _ = self
+                .outgoing_tx
+                .send(SessionEnvelope::new(session_id, env))
+                .await;
+        }
+        self.sessions.remove(&session_id);
+        Ok(())
+    }
+
+    /// Tears down a session that fell too far behind on ACKs (send window full).
+    /// Notifies the peer, removes the session, and emits `PlayerDisconnected`.
+    async fn disconnect_session_overloaded(
+        &mut self,
+        session_id: SessionId,
+    ) -> Result<(), ServerError> {
+        let disconnect = Disconnect {
+            reason: DisconnectReason::Overloaded,
+            message: "Send window exceeded: peer not acknowledging".to_string(),
+        };
+        if let Ok(payload) = self.control_codec.encode(&disconnect) {
+            let env = Envelope::new_simple(
+                CURRENT_PROTOCOL_VERSION,
+                self.control_codec.id(),
+                0,
+                routes::DISCONNECT,
+                0,
+                EnvelopeFlags::RELIABLE,
+                payload,
+            );
+            let _ = self
+                .outgoing_tx
+                .send(SessionEnvelope::new(session_id, env))
+                .await;
+        }
+        if self.sessions.remove(&session_id).is_some() {
+            let _ = self.event_tx.send(GameEvent::PlayerDisconnected(session_id));
+        }
+        Ok(())
+    }
+
     /// Handles game messages (route_id >= 100)
     async fn handle_game_message(
         &mut self,
         session_id: SessionId,
         envelope: Envelope,
     ) -> Result<(), ServerError> {
+        // When reliability is enabled, dedup/ordering is the receiver's job and
+        // the security replay window is bypassed (retransmits are legitimate dups).
+        let has_reliability = self
+            .sessions
+            .get(&session_id)
+            .map(|s| s.reliability.is_some())
+            .unwrap_or(false);
+
+        if has_reliability {
+            // Don't run undeliverable messages (e.g. arriving before the handshake
+            // completes, via UDP reorder) through the receiver — that would ACK them
+            // and they'd never be delivered. Drop without ACK so the sender
+            // retransmits until the session is ready.
+            if !self.game_message_deliverable(session_id) {
+                return Ok(());
+            }
+
+            let now = self.now_mono();
+            let outcome = {
+                let st = self.sessions.get_mut(&session_id).ok_or_else(|| {
+                    ServerError::InvalidMessage(format!("Session not found: {}", session_id))
+                })?;
+                st.reliability
+                    .as_mut()
+                    .unwrap()
+                    .game
+                    .receiver
+                    .on_receive(envelope, now)
+            };
+            return match outcome {
+                ReceiveOutcome::Deliver(e) => self.accept_game_message(session_id, e).await,
+                ReceiveOutcome::DeliverMany(es) => {
+                    for e in es {
+                        self.accept_game_message(session_id, e).await?;
+                    }
+                    Ok(())
+                }
+                ReceiveOutcome::Drop | ReceiveOutcome::DropDuplicate => Ok(()),
+                ReceiveOutcome::BufferOverflow => {
+                    self.disconnect_protocol_violation(session_id, "game ordering buffer overflow")
+                        .await
+                }
+            };
+        }
+
+        // Legacy path (no reliability): wall-clock TTL + replay protection.
         let session_state = self.sessions.get_mut(&session_id).ok_or_else(|| {
             ServerError::InvalidMessage(format!("Session not found: {}", session_id))
         })?;
@@ -818,6 +1127,30 @@ where
             .saturating_sub(self.config.replay_tolerance_window);
         session_state.received_recent_ids.retain(|&id| id >= min_id);
 
+        self.accept_game_message(session_id, envelope).await
+    }
+
+    /// Whether a game message for this session may currently be delivered
+    /// (connection/auth state). Used to avoid ACKing messages we'd then drop.
+    fn game_message_deliverable(&self, session_id: SessionId) -> bool {
+        match self.sessions.get(&session_id) {
+            Some(st) => {
+                if self.config.auth_required && !st.state.is_authorized() {
+                    return false;
+                }
+                st.state.is_connected() || st.state.is_authorized()
+            }
+            None => false,
+        }
+    }
+
+    /// Applies rate limiting + auth/state checks and queues a delivered game
+    /// message as a [`GameEvent::GameMessage`].
+    async fn accept_game_message(
+        &mut self,
+        session_id: SessionId,
+        envelope: Envelope,
+    ) -> Result<(), ServerError> {
         // Rate limiting: check if tokens are available
         let session_state = self.sessions.get_mut(&session_id).ok_or_else(|| {
             ServerError::InvalidMessage(format!("Session not found: {}", session_id))
@@ -931,6 +1264,29 @@ where
             "HELLO received from client"
         );
 
+        // Both ends must agree on the reliability layer — reject on mismatch.
+        let server_reliability = self.config.reliability.is_some();
+        if hello.reliability != server_reliability {
+            tracing::error!(
+                session = %session_id,
+                client = hello.reliability,
+                server = server_reliability,
+                "Reliability mismatch"
+            );
+            let hello_error = HelloError {
+                reason: ErrorReason::ReliabilityMismatch,
+                message: format!(
+                    "Reliability mismatch: client={}, server={}",
+                    hello.reliability, server_reliability
+                ),
+                expected_schema_hash: 0,
+            };
+            self.send_control_message(session_id, routes::HELLO_ERROR, &hello_error)
+                .await?;
+            self.sessions.remove(&session_id);
+            return Ok(());
+        }
+
         // Get session state and update game codec
         let session_state = self.sessions.get_mut(&session_id).ok_or_else(|| {
             ServerError::InvalidMessage(format!("Session not found: {}", session_id))
@@ -1006,9 +1362,10 @@ where
                     session_id: session_id.to_string(),
                     auth_required: self.config.auth_required,
                     available_auth_methods,
+                    reliability: server_reliability,
                 };
 
-                self.send_control_message(session_id, routes::HELLO_OK, &hello_ok)
+                self.send_reliable_control_message(session_id, routes::HELLO_OK, &hello_ok)
                     .await?;
 
                 // Transition to Connected state for this session
@@ -1114,7 +1471,7 @@ where
                             session_id: Some(auth_session_id),
                             error_message: None,
                         };
-                        self.send_control_message(
+                        self.send_reliable_control_message(
                             session_id,
                             routes::AUTH_RESPONSE,
                             &auth_response,
@@ -1345,6 +1702,44 @@ where
         session_id: SessionId,
         message: T,
     ) -> Result<(), ServerError> {
+        // Default to ordered reliable delivery when reliability is enabled;
+        // otherwise keep the legacy bare-RELIABLE flag behavior.
+        let mode = if self.config.reliability.is_some() {
+            ReliabilityMode::ReliableOrdered
+        } else {
+            ReliabilityMode::Reliable
+        };
+        let ttl = self.default_reliable_ttl();
+        self.send_message_with(session_id, message, mode, ttl).await
+    }
+
+    /// Sends a game message with an explicit reliability mode and TTL.
+    ///
+    /// The mode is encoded into the envelope flags. For reliable modes, when the
+    /// server has reliability enabled, the message is tracked for retransmission
+    /// until acknowledged or until `ttl` elapses (then [`GameEvent::MessageDropped`]).
+    pub async fn send_message_with<T: mokosh_protocol::GameMessage>(
+        &mut self,
+        session_id: SessionId,
+        message: T,
+        mode: ReliabilityMode,
+        ttl: Duration,
+    ) -> Result<(), ServerError> {
+        let now = self.now_mono();
+
+        // Reliable send window full ⇒ the peer is too far behind on ACKs; drop it.
+        let window_full = mode.is_reliable()
+            && self
+                .sessions
+                .get(&session_id)
+                .and_then(|s| s.reliability.as_ref())
+                .map(|r| r.game.sender.is_full())
+                .unwrap_or(false);
+        if window_full {
+            tracing::warn!(session = %session_id, "Send window full — disconnecting (overloaded)");
+            return self.disconnect_session_overloaded(session_id).await;
+        }
+
         // Get session state for codec and msg_id
         let session_state = self.sessions.get_mut(&session_id).ok_or_else(|| {
             ServerError::InvalidMessage(format!("Session not found: {}", session_id))
@@ -1365,8 +1760,8 @@ where
             ServerError::EncryptionError(format!("Failed to encrypt payload: {}", e))
         })?;
 
-        // Set flags based on actual types (const-folded by compiler)
-        let mut flags = EnvelopeFlags::RELIABLE;
+        // Reliability mode bits + compression/encryption bits.
+        let mut flags = mode.to_flags();
         if !matches!(self.compressor.compression_type(), CompressionType::None) {
             flags |= EnvelopeFlags::COMPRESSED;
         }
@@ -1374,10 +1769,30 @@ where
             flags |= EnvelopeFlags::ENCRYPTED;
         }
 
-        // Get current msg_id and increment counter for this session
-        let msg_id = session_state.msg_id_counter;
+        // Assign the sequence number. With reliability on, reliable messages get
+        // a contiguous space (so unreliable sends can't punch ordering gaps);
+        // UnreliableSequenced uses its own space; Unreliable carries no sequence.
         let codec_id = session_state.game_codec.id();
-        session_state.msg_id_counter = session_state.msg_id_counter.wrapping_add(1);
+        let msg_id = if session_state.reliability.is_some() {
+            match mode {
+                ReliabilityMode::Reliable | ReliabilityMode::ReliableOrdered => {
+                    let id = session_state.reliable_game_seq;
+                    session_state.reliable_game_seq = session_state.reliable_game_seq.wrapping_add(1);
+                    id
+                }
+                ReliabilityMode::UnreliableSequenced => {
+                    let id = session_state.sequenced_game_seq;
+                    session_state.sequenced_game_seq =
+                        session_state.sequenced_game_seq.wrapping_add(1);
+                    id
+                }
+                ReliabilityMode::Unreliable => 0,
+            }
+        } else {
+            let id = session_state.msg_id_counter;
+            session_state.msg_id_counter = session_state.msg_id_counter.wrapping_add(1);
+            id
+        };
 
         // Create envelope with automatic route_id and schema_hash from trait
         let envelope = Envelope::new_simple(
@@ -1390,6 +1805,13 @@ where
             payload_bytes,
         );
 
+        // Track for retransmission (no-op for unreliable modes / disabled reliability).
+        if mode.is_reliable() {
+            if let Some(rel) = session_state.reliability.as_mut() {
+                rel.game.sender.on_send(&envelope, mode, ttl, now);
+            }
+        }
+
         let session_envelope = SessionEnvelope::new(session_id, envelope);
         self.outgoing_tx
             .send(session_envelope)
@@ -1401,10 +1823,139 @@ where
             schema_hash = format!("{:#018x}", T::SCHEMA_HASH),
             msg_id,
             session = %session_id,
+            mode = ?mode,
             compressed = flags.contains(EnvelopeFlags::COMPRESSED),
             encrypted = flags.contains(EnvelopeFlags::ENCRYPTED),
             "Sent game message"
         );
+
+        Ok(())
+    }
+
+    /// Sends a game message with guaranteed, ordered delivery (default TTL).
+    pub async fn send_reliable<T: mokosh_protocol::GameMessage>(
+        &mut self,
+        session_id: SessionId,
+        message: T,
+    ) -> Result<(), ServerError> {
+        let ttl = self.default_reliable_ttl();
+        self.send_message_with(session_id, message, ReliabilityMode::ReliableOrdered, ttl)
+            .await
+    }
+
+    /// Sends a game message fire-and-forget (no ACK, may be lost).
+    pub async fn send_unreliable<T: mokosh_protocol::GameMessage>(
+        &mut self,
+        session_id: SessionId,
+        message: T,
+    ) -> Result<(), ServerError> {
+        let ttl = self.default_reliable_ttl();
+        self.send_message_with(session_id, message, ReliabilityMode::Unreliable, ttl)
+            .await
+    }
+
+    /// Broadcasts a message to all connected clients with an explicit mode + TTL.
+    pub async fn broadcast_with<T: mokosh_protocol::GameMessage + Clone>(
+        &mut self,
+        message: T,
+        mode: ReliabilityMode,
+        ttl: Duration,
+    ) -> Result<(), ServerError> {
+        let sessions: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(_, state)| state.state.is_connected() || state.state.is_authorized())
+            .map(|(id, _)| *id)
+            .collect();
+        for session_id in sessions {
+            self.send_message_with(session_id, message.clone(), mode, ttl)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Default TTL for reliable sends, from config (fallback 10s).
+    fn default_reliable_ttl(&self) -> Duration {
+        self.config
+            .reliability
+            .as_ref()
+            .map(|c| c.default_ttl)
+            .unwrap_or_else(|| Duration::from_secs(10))
+    }
+
+    /// Sends a control message reliably (tracked on the control channel) when
+    /// reliability is enabled; falls back to an unreliable send otherwise.
+    ///
+    /// Used for the handshake/auth responses (HELLO_OK, AUTH_RESPONSE) so a lost
+    /// datagram over UDP is retransmitted instead of stalling the connection.
+    async fn send_reliable_control_message<T: serde::Serialize>(
+        &mut self,
+        session_id: SessionId,
+        route_id: u16,
+        message: &T,
+    ) -> Result<(), ServerError> {
+        let now = self.now_mono();
+
+        // Control send window full ⇒ peer too far behind; drop it.
+        let window_full = self
+            .sessions
+            .get(&session_id)
+            .and_then(|s| s.reliability.as_ref())
+            .map(|r| r.control.sender.is_full())
+            .unwrap_or(false);
+        if window_full {
+            tracing::warn!(session = %session_id, "Control send window full — disconnecting (overloaded)");
+            return self.disconnect_session_overloaded(session_id).await;
+        }
+
+        let payload_bytes = self
+            .control_codec
+            .encode(message)
+            .map_err(|e| ServerError::InvalidMessage(format!("Failed to serialize: {}", e)))?;
+
+        let session_state = self.sessions.get_mut(&session_id).ok_or_else(|| {
+            ServerError::InvalidMessage(format!("Session not found: {}", session_id))
+        })?;
+
+        let reliable = session_state.reliability.is_some();
+        let (msg_id, flags) = if reliable {
+            let id = session_state.control_msg_id_counter;
+            session_state.control_msg_id_counter =
+                session_state.control_msg_id_counter.wrapping_add(1);
+            (id, ReliabilityMode::ReliableOrdered.to_flags())
+        } else {
+            (0, EnvelopeFlags::RELIABLE)
+        };
+
+        let envelope = Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            self.control_codec.id(),
+            0,
+            route_id,
+            msg_id,
+            flags,
+            payload_bytes,
+        );
+
+        if reliable {
+            if let Some(rel) = session_state.reliability.as_mut() {
+                rel.control.sender.on_send(
+                    &envelope,
+                    ReliabilityMode::ReliableOrdered,
+                    self.config
+                        .reliability
+                        .as_ref()
+                        .map(|c| c.default_ttl)
+                        .unwrap_or_else(|| Duration::from_secs(10)),
+                    now,
+                );
+            }
+        }
+
+        self.outgoing_tx
+            .send(SessionEnvelope::new(session_id, envelope))
+            .await
+            .map_err(|_| ServerError::ChannelSendError)?;
 
         Ok(())
     }
@@ -1464,6 +2015,58 @@ mod tests {
         (server, incoming_tx, outgoing_rx)
     }
 
+    /// Helper: Creates a reliability-enabled test server.
+    fn create_reliable_test_server() -> (
+        Server<NoCompressor, NoEncryptor>,
+        mpsc::Sender<SessionEnvelope>,
+        mpsc::Receiver<SessionEnvelope>,
+    ) {
+        let (incoming_tx, incoming_rx) = mpsc::channel(50);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel(50);
+        let config = ServerConfig {
+            reliability: Some(ReliabilityConfig::default()),
+            retransmit_tick: Duration::from_millis(10),
+            ..Default::default()
+        };
+        let server = Server::with_full_config(
+            incoming_rx,
+            outgoing_tx,
+            CodecType::from_id(1).unwrap(),
+            CodecType::from_id(1).unwrap(),
+            config,
+            None,
+            None,
+            NoCompressor,
+            NoEncryptor,
+        );
+        (server, incoming_tx, outgoing_rx)
+    }
+
+    /// Helper: Creates a reliable (sequenced) HELLO envelope with the given reliability flag.
+    fn create_hello_envelope_reliable(session_id: SessionId, reliability: bool) -> SessionEnvelope {
+        use mokosh_protocol::messages::Hello;
+        use mokosh_protocol::CURRENT_PROTOCOL_VERSION;
+
+        let hello = Hello {
+            protocol_version: CURRENT_PROTOCOL_VERSION,
+            min_protocol_version: 1,
+            codec_id: 1,
+            schema_hash: 0,
+            reliability,
+        };
+        let payload = serde_json::to_vec(&hello).unwrap();
+        let envelope = Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            1,
+            0,
+            routes::HELLO,
+            1, // control seq
+            ReliabilityMode::ReliableOrdered.to_flags(),
+            Bytes::from(payload),
+        );
+        SessionEnvelope::new(session_id, envelope)
+    }
+
     /// Helper: Creates a HELLO envelope
     fn create_hello_envelope(session_id: SessionId) -> SessionEnvelope {
         use mokosh_protocol::messages::Hello;
@@ -1474,6 +2077,7 @@ mod tests {
             min_protocol_version: 1,
             codec_id: 1, // JSON
             schema_hash: 0,
+            reliability: false,
         };
 
         let payload = serde_json::to_vec(&hello).unwrap();
@@ -1716,7 +2320,7 @@ mod tests {
         let session_id = SessionId::new_v4();
         server.sessions.insert(
             session_id,
-            SessionState::new(CodecType::from_id(1).unwrap(), 150),
+            SessionState::new(CodecType::from_id(1).unwrap(), 150, None),
         );
 
         assert_eq!(server.client_count(), 1);
@@ -1777,5 +2381,168 @@ mod tests {
         let rtt = server.get_session_rtt(session_id);
         assert!(rtt.is_some());
         assert!(rtt.unwrap().as_millis() >= 45); // Approximately 50ms
+    }
+
+    // Fix #4: handshake must be rejected when reliability config disagrees.
+    #[tokio::test]
+    async fn hello_reliability_mismatch_is_rejected() {
+        let (mut server, incoming_tx, mut outgoing_rx) = create_reliable_test_server();
+        let session_id = SessionId::new_v4();
+
+        // Client claims reliability=false, but the server has it enabled.
+        incoming_tx
+            .send(create_hello_envelope_reliable(session_id, false))
+            .await
+            .unwrap();
+        server.tick().await.unwrap();
+
+        // Server should reply HELLO_ERROR and drop the session.
+        let se = tokio::time::timeout(Duration::from_secs(1), outgoing_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(se.envelope.route_id, routes::HELLO_ERROR);
+        let err: HelloError = CodecType::from_id(1)
+            .unwrap()
+            .decode(&se.envelope.payload)
+            .unwrap();
+        assert_eq!(err.reason, ErrorReason::ReliabilityMismatch);
+        assert_eq!(server.client_count(), 0);
+    }
+
+    // Fix #2: best-effort control (PING) must NOT be routed through the reliability
+    // receiver, i.e. it must not generate an ACK.
+    #[tokio::test]
+    async fn ping_does_not_generate_ack() {
+        use std::sync::Mutex;
+
+        let (mut server, incoming_tx, mut outgoing_rx) = create_reliable_test_server();
+        let session_id = SessionId::new_v4();
+
+        // Complete a matching reliable handshake.
+        incoming_tx
+            .send(create_hello_envelope_reliable(session_id, true))
+            .await
+            .unwrap();
+
+        let seen: Arc<Mutex<Vec<u16>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_drain = seen.clone();
+        tokio::spawn(async move {
+            while let Some(se) = outgoing_rx.recv().await {
+                seen_drain.lock().unwrap().push(se.envelope.route_id);
+            }
+        });
+        let server_task = tokio::spawn(async move {
+            loop {
+                if server.tick().await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Let the handshake + its (legitimate) HELLO ACK flush, then ignore them.
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        seen.lock().unwrap().clear();
+
+        // Send a best-effort PING (bare RELIABLE, msg_id 0, not SEQUENCED).
+        let ping = Ping { timestamp: 1 };
+        let ping_env = Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            1,
+            0,
+            routes::PING,
+            0,
+            EnvelopeFlags::RELIABLE,
+            Bytes::from(serde_json::to_vec(&ping).unwrap()),
+        );
+        incoming_tx
+            .send(SessionEnvelope::new(session_id, ping_env))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let routes_seen = seen.lock().unwrap().clone();
+        server_task.abort();
+
+        assert!(
+            routes_seen.contains(&routes::PONG),
+            "server should answer PING with PONG, saw {:?}",
+            routes_seen
+        );
+        assert!(
+            !routes_seen.contains(&routes::ACK),
+            "best-effort PING must NOT generate an ACK, saw {:?}",
+            routes_seen
+        );
+    }
+
+    // Window cap: a peer that never ACKs and keeps receiving sends is dropped
+    // once the outstanding window fills (bounded sender memory).
+    #[tokio::test]
+    async fn send_window_overflow_disconnects_session() {
+        let (incoming_tx, incoming_rx) = mpsc::channel(50);
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(50);
+        let config = ServerConfig {
+            reliability: Some(ReliabilityConfig {
+                send_window: 3,
+                ..ReliabilityConfig::default()
+            }),
+            retransmit_tick: Duration::from_millis(10),
+            ..Default::default()
+        };
+        let mut server = Server::with_full_config(
+            incoming_rx,
+            outgoing_tx,
+            CodecType::from_id(1).unwrap(),
+            CodecType::from_id(1).unwrap(),
+            config,
+            None,
+            None,
+            NoCompressor,
+            NoEncryptor,
+        );
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Msg {
+            n: u32,
+        }
+        impl mokosh_protocol::GameMessage for Msg {
+            const ROUTE_ID: u16 = 300;
+            const SCHEMA_HASH: u64 = 0;
+        }
+
+        let session_id = SessionId::new_v4();
+        incoming_tx
+            .send(create_hello_envelope_reliable(session_id, true))
+            .await
+            .unwrap();
+        let ev = server.tick().await.unwrap();
+        assert!(matches!(ev, Some(GameEvent::PlayerConnected(_))));
+        assert_eq!(server.client_count(), 1);
+
+        // No ACKs ever arrive. Sends 1..=3 fill the window; the 4th overflows.
+        for n in 1..=3 {
+            server
+                .send_message_with(session_id, Msg { n }, ReliabilityMode::ReliableOrdered, Duration::from_secs(30))
+                .await
+                .unwrap();
+        }
+        assert_eq!(server.client_count(), 1, "window not yet full");
+
+        server
+            .send_message_with(session_id, Msg { n: 4 }, ReliabilityMode::ReliableOrdered, Duration::from_secs(30))
+            .await
+            .unwrap();
+
+        // Session torn down (Overloaded), PlayerDisconnected emitted.
+        assert_eq!(server.client_count(), 0, "overflow should drop the session");
+        // Drain outgoing for a DISCONNECT envelope.
+        let mut saw_disconnect = false;
+        while let Ok(se) = outgoing_rx.try_recv() {
+            if se.envelope.route_id == routes::DISCONNECT {
+                saw_disconnect = true;
+            }
+        }
+        assert!(saw_disconnect, "server should notify the peer with DISCONNECT");
     }
 }

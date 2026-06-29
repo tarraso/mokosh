@@ -28,9 +28,10 @@ use mokosh_protocol::{
     compression::{Compressor, NoCompressor},
     encryption::{Encryptor, NoEncryptor},
     messages::{
-        routes, AuthRequest, AuthResponse, Disconnect, DisconnectReason, Hello, HelloError,
+        routes, Ack, AuthRequest, AuthResponse, Disconnect, DisconnectReason, Hello, HelloError,
         HelloOk, Ping, Pong, GAME_MESSAGES_START,
     },
+    reliability::{ExpiredMessage, ReceiveOutcome, ReliabilityConfig, ReliabilityMode, ReliabilityState, MonoMillisecond},
     CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, CURRENT_PROTOCOL_VERSION,
     MIN_PROTOCOL_VERSION,
 };
@@ -52,6 +53,14 @@ pub struct ClientConfig {
 
     /// Connection timeout if no messages received
     pub connection_timeout: Duration,
+
+    /// Reliability layer configuration. `None` (default) disables it — used with
+    /// reliable transports (WebSocket). Set to `Some` over UDP to enable ACK +
+    /// retransmission. Native-only; the browser/WASM client ignores this.
+    pub reliability: Option<ReliabilityConfig>,
+
+    /// How often the retransmission/ACK timer fires when reliability is enabled.
+    pub retransmit_tick: Duration,
 }
 
 impl Default for ClientConfig {
@@ -60,6 +69,8 @@ impl Default for ClientConfig {
             hello_timeout: Duration::from_secs(5),
             keepalive_interval: Duration::from_secs(30),
             connection_timeout: Duration::from_secs(60),
+            reliability: None,
+            retransmit_tick: Duration::from_millis(25),
         }
     }
 }
@@ -92,8 +103,14 @@ where
     /// Codec to use for game messages
     game_codec: CodecType,
 
-    /// Message ID counter for game messages
+    /// Message ID counter for game messages (legacy path; reliability disabled)
     msg_id_counter: u64,
+
+    /// Contiguous sequence for reliable game messages (reliability enabled)
+    reliable_game_seq: u64,
+
+    /// Sequence for `UnreliableSequenced` game messages (independent space)
+    sequenced_game_seq: u64,
 
     /// Last time a message was received (for connection timeout detection)
     last_received: Instant,
@@ -118,6 +135,18 @@ where
 
     /// Optional channel to forward received game messages to application
     game_messages_tx: Option<mpsc::Sender<Envelope>>,
+
+    /// Per-connection reliability state (None unless reliability is enabled)
+    reliability: Option<ReliabilityState>,
+
+    /// Counter for reliable control messages (HELLO/AUTH) sent to the server
+    control_msg_id_counter: u64,
+
+    /// Optional channel notified when a reliable message is dropped (TTL/retry exhausted)
+    dropped_tx: Option<mpsc::Sender<ExpiredMessage>>,
+
+    /// Monotonic epoch for converting wall-clock into reliability [`MonoMillisecond`]s
+    reliability_epoch: Instant,
 }
 
 // Default implementation (no compression, no encryption)
@@ -216,6 +245,10 @@ where
         game_messages_tx: Option<mpsc::Sender<Envelope>>,
     ) -> Self {
         let now = Instant::now();
+        let reliability = config
+            .reliability
+            .as_ref()
+            .map(|cfg| ReliabilityState::new(cfg.clone()));
 
         Self {
             incoming_rx,
@@ -224,6 +257,8 @@ where
             control_codec,
             game_codec,
             msg_id_counter: 1, // Start message IDs from 1
+            reliable_game_seq: 1,
+            sequenced_game_seq: 1,
             last_received: now,
             last_ping_sent: now,
             last_rtt: None,
@@ -232,7 +267,17 @@ where
             compressor,
             encryptor,
             game_messages_tx,
+            reliability,
+            control_msg_id_counter: 1,
+            dropped_tx: None,
+            reliability_epoch: now,
         }
+    }
+
+    /// Sets a channel that receives notifications about reliable messages that
+    /// were dropped after exhausting their TTL / retry budget.
+    pub fn set_dropped_channel(&mut self, tx: mpsc::Sender<ExpiredMessage>) {
+        self.dropped_tx = Some(tx);
     }
 
     /// Initiates connection by sending HELLO message
@@ -256,9 +301,10 @@ where
             min_protocol_version: MIN_PROTOCOL_VERSION,
             codec_id: self.game_codec.id(),
             schema_hash,
+            reliability: self.reliability.is_some(),
         };
 
-        self.send_control_message(routes::HELLO, &hello).await?;
+        self.send_reliable_control_message(routes::HELLO, &hello).await?;
 
         // Transition from Connecting to HelloSent
         self.state
@@ -348,7 +394,7 @@ where
             credentials: credentials.to_vec(),
         };
 
-        self.send_control_message(routes::AUTH_REQUEST, &auth_request)
+        self.send_reliable_control_message(routes::AUTH_REQUEST, &auth_request)
             .await?;
 
         // Transition to AuthPending state
@@ -369,7 +415,17 @@ where
         // Interval for periodic tasks (keepalive check, timeout check)
         let mut interval = crate::compat::time::interval(Duration::from_secs(1));
 
+        // Retransmission/ACK timer (only when reliability is enabled).
+        let mut retransmit_interval = self
+            .reliability
+            .is_some()
+            .then(|| crate::compat::time::interval(self.config.retransmit_tick));
+
         loop {
+            let retransmit_fut = futures::future::OptionFuture::from(
+                retransmit_interval.as_mut().map(|iv| iv.tick()),
+            );
+
             tokio::select! {
                 result = self.incoming_rx.recv() => {
                     match result {
@@ -389,6 +445,13 @@ where
                     // Periodic tasks: check timeouts and send keepalive
                     if let Err(e) = self.handle_periodic_tasks().await {
                         tracing::error!(error = %e, "Periodic task error");
+                        break;
+                    }
+                }
+
+                Some(_) = retransmit_fut => {
+                    if let Err(e) = self.handle_reliability_tick().await {
+                        tracing::error!(error = %e, "Reliability tick error");
                         break;
                     }
                 }
@@ -504,6 +567,48 @@ where
 
     /// Handles control messages (route_id < 100)
     async fn handle_control_message(&mut self, envelope: Envelope) -> Result<(), ClientError> {
+        // ACKs are unreliable and handled directly (never acknowledged).
+        if envelope.route_id == routes::ACK {
+            return self.handle_ack(envelope);
+        }
+
+        // Reliable control messages go through the control receiver for dedup +
+        // ACK scheduling before dispatch. Gate on SEQUENCED: only HELLO/AUTH are
+        // sent ReliableOrdered; best-effort control (PING/PONG/DISCONNECT) carries
+        // a bare RELIABLE bit and must NOT be acknowledged.
+        let sequenced = envelope.flags.contains(EnvelopeFlags::SEQUENCED);
+        if sequenced && self.reliability.is_some() {
+            let now = self.now_mono();
+            let outcome = self
+                .reliability
+                .as_mut()
+                .unwrap()
+                .control
+                .receiver
+                .on_receive(envelope, now);
+            match outcome {
+                ReceiveOutcome::Deliver(e) => self.dispatch_control(e).await,
+                ReceiveOutcome::DeliverMany(es) => {
+                    for e in es {
+                        self.dispatch_control(e).await?;
+                    }
+                    Ok(())
+                }
+                ReceiveOutcome::Drop | ReceiveOutcome::DropDuplicate => Ok(()),
+                ReceiveOutcome::BufferOverflow => {
+                    tracing::error!("control ordering buffer overflow");
+                    Err(ClientError::InvalidMessage(
+                        "control ordering buffer overflow".to_string(),
+                    ))
+                }
+            }
+        } else {
+            self.dispatch_control(envelope).await
+        }
+    }
+
+    /// Dispatches a (deduplicated) control message to its handler.
+    async fn dispatch_control(&mut self, envelope: Envelope) -> Result<(), ClientError> {
         match envelope.route_id {
             routes::HELLO_OK => self.handle_hello_ok(envelope).await,
             routes::HELLO_ERROR => self.handle_hello_error(envelope).await,
@@ -518,11 +623,54 @@ where
         }
     }
 
+    /// Processes an incoming ACK, clearing acknowledged outstanding messages.
+    fn handle_ack(&mut self, envelope: Envelope) -> Result<(), ClientError> {
+        let ack: Ack = self
+            .control_codec
+            .decode(&envelope.payload)
+            .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse ACK: {}", e)))?;
+        let now = self.now_mono();
+        if let Some(rel) = self.reliability.as_mut() {
+            if let Some(ch) = rel.channel_by_id(ack.channel) {
+                ch.sender.on_ack(&ack, now);
+            }
+        }
+        Ok(())
+    }
+
     /// Handles game messages (route_id >= 100)
     async fn handle_game_message(&mut self, envelope: Envelope) {
         tracing::debug!(route_id = envelope.route_id, "Received game message");
 
-        // Forward to application if channel is configured
+        // When reliability is enabled, dedup/reorder via the game receiver.
+        if self.reliability.is_some() {
+            let now = self.now_mono();
+            let outcome = self
+                .reliability
+                .as_mut()
+                .unwrap()
+                .game
+                .receiver
+                .on_receive(envelope, now);
+            match outcome {
+                ReceiveOutcome::Deliver(e) => self.forward_game_message(e).await,
+                ReceiveOutcome::DeliverMany(es) => {
+                    for e in es {
+                        self.forward_game_message(e).await;
+                    }
+                }
+                ReceiveOutcome::Drop | ReceiveOutcome::DropDuplicate => {}
+                ReceiveOutcome::BufferOverflow => {
+                    tracing::error!("game ordering buffer overflow");
+                }
+            }
+        } else {
+            self.forward_game_message(envelope).await;
+        }
+    }
+
+    /// Forwards a delivered game message to the application channel.
+    async fn forward_game_message(&mut self, envelope: Envelope) {
         if let Some(tx) = &mut self.game_messages_tx {
             if let Err(e) = tx.send(envelope).await {
                 tracing::error!(error = %e, "Failed to forward game message to application");
@@ -541,6 +689,15 @@ where
             version = format!("{:#06x}", hello_ok.server_version),
             "HELLO_OK received"
         );
+
+        // Both ends must agree on the reliability layer.
+        if hello_ok.reliability != self.reliability.is_some() {
+            return Err(ClientError::InvalidMessage(format!(
+                "reliability mismatch: server={}, client={}",
+                hello_ok.reliability,
+                self.reliability.is_some()
+            )));
+        }
 
         // Transition to Connected state
         self.state
@@ -768,6 +925,37 @@ where
         &mut self,
         message: T,
     ) -> Result<(), ClientError> {
+        let mode = if self.reliability.is_some() {
+            ReliabilityMode::ReliableOrdered
+        } else {
+            ReliabilityMode::Reliable
+        };
+        let ttl = self.default_reliable_ttl();
+        self.send_message_with(message, mode, ttl).await
+    }
+
+    /// Sends a game message with an explicit reliability mode and TTL.
+    ///
+    /// For reliable modes (with reliability enabled), the message is tracked for
+    /// retransmission until acknowledged or until `ttl` elapses.
+    pub async fn send_message_with<T: mokosh_protocol::GameMessage>(
+        &mut self,
+        message: T,
+        mode: ReliabilityMode,
+        ttl: Duration,
+    ) -> Result<(), ClientError> {
+        let now = self.now_mono();
+
+        // Reliable send window full ⇒ the server is too far behind on ACKs; the
+        // connection is backed up. Signal the app (terminal — not retry backpressure).
+        if mode.is_reliable() {
+            if let Some(rel) = self.reliability.as_ref() {
+                if rel.game.sender.is_full() {
+                    return Err(ClientError::SendWindowExceeded);
+                }
+            }
+        }
+
         // Serialize message using game codec
         let payload_bytes = self.game_codec.encode(&message).map_err(|e| {
             ClientError::CodecError(format!("Failed to serialize game message: {}", e))
@@ -783,8 +971,8 @@ where
             ClientError::EncryptionError(format!("Failed to encrypt payload: {}", e))
         })?;
 
-        // Set flags based on actual types (const-folded by compiler)
-        let mut flags = EnvelopeFlags::RELIABLE;
+        // Reliability mode bits + compression/encryption bits.
+        let mut flags = mode.to_flags();
         use mokosh_protocol::compression::CompressionType;
         use mokosh_protocol::encryption::EncryptionType;
         if !matches!(self.compressor.compression_type(), CompressionType::None) {
@@ -794,9 +982,28 @@ where
             flags |= EnvelopeFlags::ENCRYPTED;
         }
 
-        // Get current msg_id and increment counter
-        let msg_id = self.msg_id_counter;
-        self.msg_id_counter = self.msg_id_counter.wrapping_add(1);
+        // Assign the sequence number. Reliable messages use a contiguous space
+        // (so unreliable sends can't punch ordering gaps); UnreliableSequenced
+        // uses its own space; Unreliable carries no sequence.
+        let msg_id = if self.reliability.is_some() {
+            match mode {
+                ReliabilityMode::Reliable | ReliabilityMode::ReliableOrdered => {
+                    let id = self.reliable_game_seq;
+                    self.reliable_game_seq = self.reliable_game_seq.wrapping_add(1);
+                    id
+                }
+                ReliabilityMode::UnreliableSequenced => {
+                    let id = self.sequenced_game_seq;
+                    self.sequenced_game_seq = self.sequenced_game_seq.wrapping_add(1);
+                    id
+                }
+                ReliabilityMode::Unreliable => 0,
+            }
+        } else {
+            let id = self.msg_id_counter;
+            self.msg_id_counter = self.msg_id_counter.wrapping_add(1);
+            id
+        };
 
         // Create envelope with automatic route_id and schema_hash from trait
         let envelope = Envelope::new_simple(
@@ -809,6 +1016,13 @@ where
             payload_bytes,
         );
 
+        // Track for retransmission (no-op for unreliable modes / disabled reliability).
+        if mode.is_reliable() {
+            if let Some(rel) = self.reliability.as_mut() {
+                rel.game.sender.on_send(&envelope, mode, ttl, now);
+            }
+        }
+
         self.outgoing_tx
             .send(envelope)
             .await
@@ -818,10 +1032,144 @@ where
             route_id = T::ROUTE_ID,
             schema_hash = format!("{:#018x}", T::SCHEMA_HASH),
             msg_id,
+            mode = ?mode,
             compressed = flags.contains(EnvelopeFlags::COMPRESSED),
             encrypted = flags.contains(EnvelopeFlags::ENCRYPTED),
             "Sent game message"
         );
+
+        Ok(())
+    }
+
+    /// Sends a game message with guaranteed, ordered delivery (default TTL).
+    pub async fn send_reliable<T: mokosh_protocol::GameMessage>(
+        &mut self,
+        message: T,
+    ) -> Result<(), ClientError> {
+        let ttl = self.default_reliable_ttl();
+        self.send_message_with(message, ReliabilityMode::ReliableOrdered, ttl)
+            .await
+    }
+
+    /// Sends a game message fire-and-forget (no ACK, may be lost).
+    pub async fn send_unreliable<T: mokosh_protocol::GameMessage>(
+        &mut self,
+        message: T,
+    ) -> Result<(), ClientError> {
+        let ttl = self.default_reliable_ttl();
+        self.send_message_with(message, ReliabilityMode::Unreliable, ttl)
+            .await
+    }
+
+    /// Default TTL for reliable sends, from config (fallback 10s).
+    fn default_reliable_ttl(&self) -> Duration {
+        self.config
+            .reliability
+            .as_ref()
+            .map(|c| c.default_ttl)
+            .unwrap_or_else(|| Duration::from_secs(10))
+    }
+
+    /// Current reliability timestamp (monotonic milliseconds since construction).
+    #[inline]
+    fn now_mono(&self) -> MonoMillisecond {
+        MonoMillisecond::from_millis(self.reliability_epoch.elapsed().as_millis() as u64)
+    }
+
+    /// Sends a control message reliably (tracked on the control channel) when
+    /// reliability is enabled; falls back to an unreliable send otherwise.
+    async fn send_reliable_control_message<T: serde::Serialize>(
+        &mut self,
+        route_id: u16,
+        message: &T,
+    ) -> Result<(), ClientError> {
+        let now = self.now_mono();
+
+        // Control send window full ⇒ connection backed up.
+        if let Some(rel) = self.reliability.as_ref() {
+            if rel.control.sender.is_full() {
+                return Err(ClientError::SendWindowExceeded);
+            }
+        }
+
+        let payload_bytes = self
+            .control_codec
+            .encode(message)
+            .map_err(|e| ClientError::InvalidMessage(format!("Failed to serialize: {}", e)))?;
+
+        let (msg_id, flags, track) = if self.reliability.is_some() {
+            let id = self.control_msg_id_counter;
+            self.control_msg_id_counter = self.control_msg_id_counter.wrapping_add(1);
+            (id, ReliabilityMode::ReliableOrdered.to_flags(), true)
+        } else {
+            (0, EnvelopeFlags::RELIABLE, false)
+        };
+
+        let envelope = Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            self.control_codec.id(),
+            0,
+            route_id,
+            msg_id,
+            flags,
+            payload_bytes,
+        );
+
+        if track {
+            let ttl = self.default_reliable_ttl();
+            if let Some(rel) = self.reliability.as_mut() {
+                rel.control
+                    .sender
+                    .on_send(&envelope, ReliabilityMode::ReliableOrdered, ttl, now);
+            }
+        }
+
+        self.outgoing_tx
+            .send(envelope)
+            .await
+            .map_err(|_| ClientError::ChannelSendError)?;
+
+        Ok(())
+    }
+
+    /// Drives retransmission, ACK flushing and drop reporting (called by the
+    /// native retransmit timer; no-op when reliability is disabled).
+    #[cfg(all(feature = "native", not(feature = "wasm")))]
+    async fn handle_reliability_tick(&mut self) -> Result<(), ClientError> {
+        let now = self.now_mono();
+        let (expired, retransmits, acks) = match self.reliability.as_mut() {
+            Some(rel) => (
+                rel.poll_expired(now),
+                rel.poll_retransmits(now),
+                rel.build_acks(now),
+            ),
+            None => return Ok(()),
+        };
+
+        for env in retransmits {
+            let _ = self.outgoing_tx.send(env).await;
+        }
+        for ack in acks {
+            let payload = self
+                .control_codec
+                .encode(&ack)
+                .map_err(|e| ClientError::CodecError(e.to_string()))?;
+            let env = Envelope::new_simple(
+                CURRENT_PROTOCOL_VERSION,
+                self.control_codec.id(),
+                0,
+                routes::ACK,
+                0,
+                EnvelopeFlags::empty(),
+                payload,
+            );
+            let _ = self.outgoing_tx.send(env).await;
+        }
+        if let Some(tx) = &mut self.dropped_tx {
+            for ex in expired {
+                let _ = tx.send(ex).await;
+            }
+        }
 
         Ok(())
     }
@@ -847,6 +1195,9 @@ pub enum ClientError {
 
     #[error("Connection timeout - no messages received")]
     ConnectionTimeout,
+
+    #[error("Send window exceeded: server not acknowledging (connection backed up)")]
+    SendWindowExceeded,
 
     #[error("Authentication failed: {0}")]
     AuthenticationFailed(String),

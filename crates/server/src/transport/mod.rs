@@ -1,4 +1,5 @@
 pub mod memory;
+pub mod udp;
 pub mod websocket;
 
 // Re-export the Transport trait from protocol

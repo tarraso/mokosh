@@ -3,6 +3,9 @@ pub mod memory;
 #[cfg(feature = "native")]
 pub mod websocket;
 
+#[cfg(feature = "native")]
+pub mod udp;
+
 #[cfg(feature = "wasm")]
 pub mod browser_websocket;
 

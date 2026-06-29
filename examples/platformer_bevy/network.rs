@@ -78,6 +78,7 @@ async fn connect_to_server(
         min_protocol_version: CURRENT_PROTOCOL_VERSION,
         codec_id: 1, // JSON
         schema_hash: 0,
+        reliability: false, // WebSocket transport, reliability layer off
     };
 
     let hello_payload = serde_json::to_vec(&hello)

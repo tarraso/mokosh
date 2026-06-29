@@ -46,6 +46,7 @@ pub mod envelope;
 pub mod error;
 pub mod message_registry;
 pub mod messages;
+pub mod reliability;
 pub mod state;
 pub mod transport;
 pub mod version;
@@ -54,7 +55,14 @@ pub use codec_registry::CodecType;
 pub use envelope::{Envelope, EnvelopeFlags, ENVELOPE_HEADER_SIZE};
 pub use error::{EnvelopeError, ProtocolError, Result};
 pub use message_registry::{calculate_global_schema_hash, GameMessage, MessageRegistry};
-pub use messages::{Disconnect, DisconnectReason, ErrorReason, Hello, HelloError, HelloOk, Ping, Pong};
+pub use messages::{
+    ack_channel, Ack, Disconnect, DisconnectReason, ErrorReason, Hello, HelloError, HelloOk, Ping,
+    Pong,
+};
+pub use reliability::{
+    ExpiredMessage, ReceiveOutcome, ReliabilityChannel, ReliabilityConfig, ReliabilityMode,
+    ReliabilityReceiver, ReliabilitySender, ReliabilityState, MonoMillisecond,
+};
 pub use state::ConnectionState;
 pub use transport::Transport;
 pub use version::{negotiate_version, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION};

@@ -5,10 +5,12 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 bitflags! {
     /// Envelope flags indicating message properties
     ///
-    /// - bit 0: RELIABLE - guaranteed delivery required
+    /// - bit 0: RELIABLE - guaranteed delivery required (ACK + retransmit)
     /// - bit 1: ENCRYPTED - payload is encrypted
     /// - bit 2: COMPRESSED - payload is compressed
-    /// - bits 3-7: reserved
+    /// - bit 3: SEQUENCED - message participates in a sequence number space
+    /// - bit 4: ORDERED - receiver must deliver strictly in sequence order
+    /// - bits 5-7: reserved
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct EnvelopeFlags: u8 {
         /// Message requires guaranteed delivery
@@ -17,6 +19,10 @@ bitflags! {
         const ENCRYPTED = 0b0000_0010;
         /// Payload is compressed
         const COMPRESSED = 0b0000_0100;
+        /// Message participates in a sequence number space (drop-if-stale / ordering)
+        const SEQUENCED = 0b0000_1000;
+        /// Receiver must deliver strictly in sequence order (implies SEQUENCED)
+        const ORDERED = 0b0001_0000;
     }
 }
 
