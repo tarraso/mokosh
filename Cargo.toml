@@ -64,12 +64,28 @@ name = "platformer_server"
 path = "examples/platformer/server.rs"
 
 [[example]]
+name = "platformer_server_udp"
+path = "examples/platformer/server_udp.rs"
+
+[[example]]
+name = "platformer_client_udp"
+path = "examples/platformer/client_udp.rs"
+
+[[example]]
 name = "bevy_platformer_server"
 path = "examples/platformer_bevy/server.rs"
 
 [[example]]
 name = "bevy_platformer_client"
 path = "examples/platformer_bevy/client.rs"
+
+[[example]]
+name = "bevy_platformer_server_udp"
+path = "examples/platformer_bevy/server_udp.rs"
+
+[[example]]
+name = "bevy_platformer_client_udp"
+path = "examples/platformer_bevy/client_udp.rs"
 
 [[example]]
 name = "bevy_platformer_client_wasm"

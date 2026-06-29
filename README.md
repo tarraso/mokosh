@@ -208,17 +208,35 @@ func _on_message(route_id: int, data: Dictionary):
 
 ## Examples
 
-The repository includes 9 production-ready examples:
+The repository includes 13 production-ready examples:
 
 1. **`platformer_server`** - Simple event-based server (for Godot clients)
-2. **`bevy_platformer_server`** - Bevy-based server with physics simulation
-3. **`bevy_platformer_client`** - Bevy native desktop client
-4. **`bevy_platformer_client_wasm`** - Bevy WASM browser client
-5. **`codec_demo`** - Demonstrates codec comparison (JSON vs Postcard vs Raw)
-6. **`auth_demo`** - Shows authentication flow with AuthProvider
-7. **`encryption_compression_demo`** - Encryption + compression features
-8. **`message_registry_demo`** - Type-safe messaging with schema validation
-9. **`prediction_demo`** - Client-side prediction + server reconciliation
+2. **`platformer_server_udp`** - Same server over UDP with the reliability layer enabled
+3. **`platformer_client_udp`** - CLI client over UDP (reliable handshake, snapshots, inputs)
+4. **`bevy_platformer_server`** - Bevy-based server with physics simulation (WebSocket)
+5. **`bevy_platformer_client`** - Bevy native desktop client (WebSocket)
+6. **`bevy_platformer_server_udp`** - Bevy server over UDP + reliability layer
+7. **`bevy_platformer_client_udp`** - Bevy native desktop client over UDP + reliability
+8. **`bevy_platformer_client_wasm`** - Bevy WASM browser client
+9. **`codec_demo`** - Demonstrates codec comparison (JSON vs Postcard vs Raw)
+10. **`auth_demo`** - Shows authentication flow with AuthProvider
+11. **`encryption_compression_demo`** - Encryption + compression features
+12. **`message_registry_demo`** - Type-safe messaging with schema validation
+13. **`prediction_demo`** - Client-side prediction + server reconciliation
+
+Run the headless UDP demo in two terminals:
+
+```bash
+cargo run --example platformer_server_udp
+cargo run --example platformer_client_udp
+```
+
+Play the graphical UDP demo (open a second client window for multiplayer):
+
+```bash
+cargo run --example bevy_platformer_server_udp
+cargo run --example bevy_platformer_client_udp
+```
 
 See `examples/platformer_bevy/README.md` for the full Bevy demo setup instructions.
 
