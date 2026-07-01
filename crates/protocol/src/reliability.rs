@@ -737,10 +737,17 @@ impl ReliablePipe {
     }
 
     /// Assigns the sequence number into `env.msg_id` and tracks the envelope for
-    /// retransmission (reliable modes only). The envelope's flags must already
+    /// retransmission (tracked modes only). The envelope's flags must already
     /// encode `mode`; the channel (control vs game) is chosen by `env.route_id`.
     ///
-    /// Returns [`WindowFull`] *before* consuming a sequence number if the
+    /// **Best-effort control** (`route_id < 100` with a bare `RELIABLE` bit that is
+    /// *not* ordered — PING/PONG/DISCONNECT/ACK) is deliberately **not** tracked or
+    /// sequenced: it carries `msg_id 0` and is never retransmitted or ACKed. Only
+    /// `ReliableOrdered` control (HELLO/AUTH) is tracked. Game `Reliable` /
+    /// `ReliableOrdered` are tracked as usual. This mirrors the receive-side rule in
+    /// [`handle_incoming`](Self::handle_incoming).
+    ///
+    /// Returns [`WindowFull`] *before* consuming a sequence number if the tracked
     /// reliable window for the channel is full.
     pub fn stamp_outgoing(
         &mut self,
@@ -750,36 +757,38 @@ impl ReliablePipe {
         now: MonoMillisecond,
     ) -> Result<(), WindowFull> {
         let is_control = Self::is_control(env.route_id);
+        // Bare-RELIABLE control is best-effort; only ordered control is tracked
+        // (game reliable is always tracked).
+        let tracked = mode.is_reliable() && (!is_control || mode.is_ordered());
+
         let channel = if is_control {
             &mut self.state.control
         } else {
             &mut self.state.game
         };
 
-        if mode.is_reliable() && channel.sender.is_full() {
+        if tracked && channel.sender.is_full() {
             return Err(WindowFull);
         }
 
-        env.msg_id = match mode {
-            ReliabilityMode::Reliable | ReliabilityMode::ReliableOrdered => {
-                let counter = if is_control {
-                    &mut self.control_seq
-                } else {
-                    &mut self.reliable_game_seq
-                };
-                let id = *counter;
-                *counter = counter.wrapping_add(1);
-                id
-            }
-            ReliabilityMode::UnreliableSequenced => {
-                let id = self.sequenced_game_seq;
-                self.sequenced_game_seq = self.sequenced_game_seq.wrapping_add(1);
-                id
-            }
-            ReliabilityMode::Unreliable => 0,
+        env.msg_id = if tracked {
+            let counter = if is_control {
+                &mut self.control_seq
+            } else {
+                &mut self.reliable_game_seq
+            };
+            let id = *counter;
+            *counter = counter.wrapping_add(1);
+            id
+        } else if matches!(mode, ReliabilityMode::UnreliableSequenced) {
+            let id = self.sequenced_game_seq;
+            self.sequenced_game_seq = self.sequenced_game_seq.wrapping_add(1);
+            id
+        } else {
+            0
         };
 
-        if mode.is_reliable() {
+        if tracked {
             channel.sender.on_send(env, mode, ttl, now);
         }
         Ok(())
@@ -957,6 +966,7 @@ impl SessionPipe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messages::routes;
     use bytes::Bytes;
 
     fn env(seq: u64, route_id: u16, mode: ReliabilityMode) -> Envelope {
@@ -1392,6 +1402,26 @@ mod tests {
         // after the RTO; the unreliable/sequenced ones are not tracked.
         let out = p.tick(t(200));
         assert_eq!(out.retransmits.len(), 3);
+    }
+
+    #[test]
+    fn best_effort_control_is_not_tracked() {
+        let mut p = SessionPipe::reliable(cfg());
+        // A bare-RELIABLE control message (e.g. DISCONNECT/PING) is best-effort:
+        // msg_id 0, not tracked (no retransmit).
+        let mut d = blank_env(routes::DISCONNECT, ReliabilityMode::Reliable);
+        p.stamp_outgoing(&mut d, ReliabilityMode::Reliable, Duration::from_secs(10), t(0))
+            .unwrap();
+        assert_eq!(d.msg_id, 0, "best-effort control carries no sequence");
+        // Ordered control (HELLO) IS tracked (control seq 1).
+        let mut h = blank_env(routes::HELLO, ReliabilityMode::ReliableOrdered);
+        p.stamp_outgoing(&mut h, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0))
+            .unwrap();
+        assert_eq!(h.msg_id, 1);
+        // Only the HELLO is retransmitted.
+        let out = p.tick(t(200));
+        assert_eq!(out.retransmits.len(), 1);
+        assert_eq!(out.retransmits[0].route_id, routes::HELLO);
     }
 
     #[test]

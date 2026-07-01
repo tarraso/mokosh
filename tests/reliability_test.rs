@@ -16,6 +16,7 @@ use mokosh_protocol_derive::GameMessage;
 use mokosh_client::transport::memory::MemoryTransport;
 use mokosh_client::transport::{ReliableLink, Transport};
 use mokosh_client::{Client, ClientConfig};
+use mokosh_server::transport::ReliableServerLink;
 use mokosh_server::{GameEvent, Server, ServerConfig};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -59,10 +60,10 @@ async fn server_to_client_reliable_ordered_survives_loss() {
     let sid = SessionId::new_v4();
 
     // Client -> Server (Envelope) and Server -> Client (Envelope) wires, plus the
-    // server's SessionEnvelope channels.
+    // transport-side SessionEnvelope channels feeding the server's ReliableServerLink.
     let (c2s_tx, mut c2s_rx) = mpsc::channel::<Envelope>(256);
-    let (s_in_tx, s_in_rx) = mpsc::channel::<SessionEnvelope>(256);
-    let (s_out_tx, mut s_out_rx) = mpsc::channel::<SessionEnvelope>(256);
+    let (t_in_tx, t_in_rx) = mpsc::channel::<SessionEnvelope>(256);
+    let (t_out_tx, mut t_out_rx) = mpsc::channel::<SessionEnvelope>(256);
     let (s2c_tx, s2c_rx) = mpsc::channel::<Envelope>(256);
     let (game_tx, mut game_rx) = mpsc::channel::<Envelope>(256);
 
@@ -74,14 +75,14 @@ async fn server_to_client_reliable_ordered_survives_loss() {
             if n.is_multiple_of(4) {
                 continue; // dropped
             }
-            if s_in_tx.send(SessionEnvelope::new(sid, env)).await.is_err() {
+            if t_in_tx.send(SessionEnvelope::new(sid, env)).await.is_err() {
                 break;
             }
         }
     });
     tokio::spawn(async move {
         let mut n = 0usize;
-        while let Some(se) = s_out_rx.recv().await {
+        while let Some(se) = t_out_rx.recv().await {
             n += 1;
             if n.is_multiple_of(4) {
                 continue; // dropped
@@ -92,6 +93,11 @@ async fn server_to_client_reliable_ordered_survives_loss() {
         }
     });
 
+    // Reliability decorator between the (lossy) transport and the Server.
+    let (srv_in_rx, srv_out_tx) = ReliableServerLink::new(fast_reliability())
+        .with_tick(Duration::from_millis(10))
+        .spawn(t_in_rx, t_out_tx);
+
     // Server with reliability enabled.
     let server_cfg = ServerConfig {
         reliability: Some(fast_reliability()),
@@ -99,8 +105,8 @@ async fn server_to_client_reliable_ordered_survives_loss() {
         ..Default::default()
     };
     let mut server = Server::with_full_config(
-        s_in_rx,
-        s_out_tx,
+        srv_in_rx,
+        srv_out_tx,
         json(),
         json(),
         server_cfg,
@@ -195,36 +201,43 @@ async fn server_to_client_reliable_ordered_survives_loss() {
 async fn server_retransmits_then_drops_unacked_message() {
     let sid = SessionId::new_v4();
 
-    let (s_in_tx, s_in_rx) = mpsc::channel::<SessionEnvelope>(256);
-    let (s_out_tx, mut s_out_rx) = mpsc::channel::<SessionEnvelope>(256);
+    // Transport-side channels (below the reliability decorator).
+    let (t_in_tx, t_in_rx) = mpsc::channel::<SessionEnvelope>(256);
+    let (t_out_tx, mut t_out_rx) = mpsc::channel::<SessionEnvelope>(256);
 
-    // Count how many times the game message (route 300) hits the wire. The peer
-    // never sends ACKs, so the server should keep retransmitting until TTL.
+    // Count how many times the game message (route 300) hits the wire — the
+    // decorator retransmits it since the peer never ACKs, until it gives up (TTL).
     let game_sends = Arc::new(AtomicUsize::new(0));
     let game_sends_drain = game_sends.clone();
     tokio::spawn(async move {
-        while let Some(se) = s_out_rx.recv().await {
+        while let Some(se) = t_out_rx.recv().await {
             if se.envelope.route_id == 300 {
                 game_sends_drain.fetch_add(1, Ordering::SeqCst);
             }
         }
     });
 
+    // Reliability lives in the decorator now (retransmit + TTL give-up).
+    let rel_cfg = ReliabilityConfig {
+        initial_rto: Duration::from_millis(30),
+        min_rto: Duration::from_millis(20),
+        max_rto: Duration::from_millis(60),
+        default_ttl: Duration::from_millis(300),
+        ack_delay: Duration::from_millis(5),
+        ..fast_reliability()
+    };
+    let (srv_in_rx, srv_out_tx) = ReliableServerLink::new(rel_cfg.clone())
+        .with_tick(Duration::from_millis(10))
+        .spawn(t_in_rx, t_out_tx);
+
     let server_cfg = ServerConfig {
-        reliability: Some(ReliabilityConfig {
-            initial_rto: Duration::from_millis(30),
-            min_rto: Duration::from_millis(20),
-            max_rto: Duration::from_millis(60),
-            default_ttl: Duration::from_millis(300),
-            ack_delay: Duration::from_millis(5),
-            ..fast_reliability()
-        }),
+        reliability: Some(rel_cfg),
         retransmit_tick: Duration::from_millis(10),
         ..Default::default()
     };
     let mut server = Server::with_full_config(
-        s_in_rx,
-        s_out_tx,
+        srv_in_rx,
+        srv_out_tx,
         json(),
         json(),
         server_cfg,
@@ -286,7 +299,7 @@ async fn server_retransmits_then_drops_unacked_message() {
         ReliabilityMode::ReliableOrdered.to_flags(),
         Bytes::from(serde_json::to_vec(&hello).unwrap()),
     );
-    s_in_tx
+    t_in_tx
         .send(SessionEnvelope::new(sid, hello_env))
         .await
         .unwrap();
@@ -306,5 +319,5 @@ async fn server_retransmits_then_drops_unacked_message() {
     );
 
     // Keep the wire alive long enough for the assertions; silence unused warning.
-    drop(s_in_tx);
+    drop(t_in_tx);
 }

@@ -15,6 +15,7 @@ use mokosh_protocol::encryption::NoEncryptor;
 use mokosh_protocol::{CodecType, ReliabilityConfig, ReliabilityMode};
 use mokosh_protocol_derive::GameMessage;
 use mokosh_server::transport::udp::UdpServer;
+use mokosh_server::transport::ReliableServerLink;
 use mokosh_server::{GameEvent, Server, ServerConfig};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -59,17 +60,22 @@ async fn udp_reliable_ordered_end_to_end() {
     drop(probe);
 
     // --- Server: real UdpServer transport <-> Server event loop ---
-    let (srv_in_tx, srv_in_rx) = mpsc::channel(256);
-    let (srv_out_tx, srv_out_rx) = mpsc::channel(256);
+    let (t_in_tx, t_in_rx) = mpsc::channel(256);
+    let (t_out_tx, t_out_rx) = mpsc::channel(256);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
     let server_transport = UdpServer::new(server_addr);
     let transport_task = tokio::spawn(async move {
         let _ = server_transport
-            .run(srv_in_tx, srv_out_rx, Some(ready_tx))
+            .run(t_in_tx, t_out_rx, Some(ready_tx))
             .await;
     });
     ready_rx.await.expect("UDP server failed to start");
+
+    // Reliability decorator between the UDP transport and the Server.
+    let (srv_in_rx, srv_out_tx) = ReliableServerLink::new(fast_reliability())
+        .with_tick(Duration::from_millis(10))
+        .spawn(t_in_rx, t_out_tx);
 
     let server_cfg = ServerConfig {
         reliability: Some(fast_reliability()),
@@ -186,17 +192,22 @@ async fn udp_client_handle_reliable_to_server() {
     drop(probe);
 
     // --- Server ---
-    let (srv_in_tx, srv_in_rx) = mpsc::channel(256);
-    let (srv_out_tx, srv_out_rx) = mpsc::channel(256);
+    let (t_in_tx, t_in_rx) = mpsc::channel(256);
+    let (t_out_tx, t_out_rx) = mpsc::channel(256);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
     let server_transport = UdpServer::new(server_addr);
     let transport_task = tokio::spawn(async move {
         let _ = server_transport
-            .run(srv_in_tx, srv_out_rx, Some(ready_tx))
+            .run(t_in_tx, t_out_rx, Some(ready_tx))
             .await;
     });
     ready_rx.await.expect("UDP server failed to start");
+
+    // Reliability decorator between the UDP transport and the Server.
+    let (srv_in_rx, srv_out_tx) = ReliableServerLink::new(fast_reliability())
+        .with_tick(Duration::from_millis(10))
+        .spawn(t_in_rx, t_out_tx);
 
     let server_cfg = ServerConfig {
         reliability: Some(fast_reliability()),

@@ -16,6 +16,7 @@ use mokosh_protocol::compression::NoCompressor;
 use mokosh_protocol::encryption::NoEncryptor;
 use mokosh_protocol::{CodecType, ReliabilityConfig, ReliabilityMode};
 use mokosh_server::transport::udp::UdpServer;
+use mokosh_server::transport::ReliableServerLink;
 use mokosh_server::{GameEvent, Server, ServerConfig};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -29,19 +30,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("🎮 Starting 2D Platformer Server (UDP + reliability) on port 8080...");
 
-    let (incoming_tx, incoming_rx) = mpsc::channel(100);
-    let (outgoing_tx, outgoing_rx) = mpsc::channel(100);
+    let (t_in_tx, t_in_rx) = mpsc::channel(100);
+    let (t_out_tx, t_out_rx) = mpsc::channel(100);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
     // UDP transport.
     let addr: SocketAddr = "127.0.0.1:8080".parse()?;
     let transport = UdpServer::new(addr);
     tokio::spawn(async move {
-        if let Err(e) = transport.run(incoming_tx, outgoing_rx, Some(ready_tx)).await {
+        if let Err(e) = transport.run(t_in_tx, t_out_rx, Some(ready_tx)).await {
             eprintln!("❌ Transport error: {}", e);
         }
     });
     ready_rx.await.expect("Transport failed to start");
+
+    // Reliability decorator between the transport and the Server.
+    let (incoming_rx, outgoing_tx) =
+        ReliableServerLink::new(ReliabilityConfig::default()).spawn(t_in_rx, t_out_tx);
 
     // Server with the reliability layer enabled (the client must match — the
     // handshake negotiates it).
