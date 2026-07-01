@@ -30,12 +30,11 @@
 
 use mokosh_protocol::messages::{routes, GAME_MESSAGES_START};
 use mokosh_protocol::{
-    Ack, CodecType, Disconnect, DisconnectReason, Envelope, EnvelopeFlags, Inbound, MessageDropped,
-    MonoMillisecond, ReliabilityConfig, ReliabilityMode, ReliablePipe, SessionEnvelope, SessionId,
-    WindowFull, CURRENT_PROTOCOL_VERSION,
+    Bridge, CodecType, Envelope, PeerSet, ReliabilityConfig, ReliablePipe, SessionEnvelope,
+    SessionId,
 };
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Channel buffer between the decorator and the `Server`.
@@ -104,170 +103,82 @@ impl ReliableServerLink {
     ) {
         let (server_in_tx, server_in_rx) = mpsc::channel(LINK_BUFFER);
         let (server_out_tx, server_out_rx) = mpsc::channel(LINK_BUFFER);
-        tokio::spawn(self.run(transport_in_rx, transport_out_tx, server_in_tx, server_out_rx));
+        let bridge = Bridge::new(
+            SessionPeers::new(self.cfg.clone()),
+            server_in_tx,      // → app (Server)
+            transport_out_tx,  // → network (transport)
+            &self.cfg,
+            self.control_codec,
+            self.retransmit_tick,
+        );
+        tokio::spawn(bridge.run(server_out_rx, transport_in_rx));
         (server_in_rx, server_out_tx)
     }
+}
 
-    async fn run(
-        self,
-        mut transport_in_rx: mpsc::Receiver<SessionEnvelope>,
-        transport_out_tx: mpsc::Sender<SessionEnvelope>,
-        server_in_tx: mpsc::Sender<SessionEnvelope>,
-        mut server_out_rx: mpsc::Receiver<SessionEnvelope>,
-    ) {
-        let ReliableServerLink {
+/// [`PeerSet`] for the multi-client server: one [`PerSession`] pipe per
+/// [`SessionId`], created on demand, with the handshake "established" gate.
+struct SessionPeers {
+    cfg: ReliabilityConfig,
+    sessions: HashMap<SessionId, PerSession>,
+}
+
+impl SessionPeers {
+    fn new(cfg: ReliabilityConfig) -> Self {
+        Self {
             cfg,
-            control_codec: codec,
-            retransmit_tick,
-        } = self;
-        let ttl = cfg.default_ttl;
-        let epoch = Instant::now();
-        let mut timer = tokio::time::interval(retransmit_tick);
-        let mut sessions: HashMap<SessionId, PerSession> = HashMap::new();
-
-        loop {
-            tokio::select! {
-                // Network → server: consume ACKs; dedup/reorder + deliver the rest.
-                maybe = transport_in_rx.recv() => {
-                    let Some(se) = maybe else { break; };
-                    let now = now_ms(epoch);
-                    let sid = se.session_id;
-                    let env = se.envelope;
-                    let entry = sessions.entry(sid).or_insert_with(|| PerSession::new(&cfg));
-
-                    if env.route_id == routes::ACK {
-                        if let Ok(ack) = codec.decode::<Ack>(&env.payload) {
-                            entry.pipe.on_ack(&ack, now);
-                        }
-                        continue;
-                    }
-
-                    // Withhold game traffic (drop, no ACK) until the handshake lands.
-                    if env.route_id >= GAME_MESSAGES_START && !entry.established {
-                        continue;
-                    }
-
-                    match entry.pipe.handle_incoming(env, now) {
-                        Inbound::Deliver(envs) => {
-                            for e in envs {
-                                if e.route_id == routes::HELLO {
-                                    entry.established = true;
-                                }
-                                let is_disconnect = e.route_id == routes::DISCONNECT;
-                                if server_in_tx.send(SessionEnvelope::new(sid, e)).await.is_err() {
-                                    return;
-                                }
-                                if is_disconnect {
-                                    sessions.remove(&sid);
-                                    break;
-                                }
-                            }
-                        }
-                        Inbound::Consumed => {}
-                        Inbound::Overflow => {
-                            let d = disconnect_envelope(codec, DisconnectReason::ProtocolViolation, "ordering buffer overflow");
-                            let _ = server_in_tx.send(SessionEnvelope::new(sid, d)).await;
-                            sessions.remove(&sid);
-                        }
-                    }
-                }
-
-                // Server → network: stamp (assign seq + track), then forward.
-                maybe = server_out_rx.recv() => {
-                    let Some(se) = maybe else { break; };
-                    let now = now_ms(epoch);
-                    let sid = se.session_id;
-                    let mut env = se.envelope;
-                    let is_disconnect = env.route_id == routes::DISCONNECT;
-                    let entry = sessions.entry(sid).or_insert_with(|| PerSession::new(&cfg));
-                    let mode = ReliabilityMode::from_flags(env.flags);
-                    match entry.pipe.stamp_outgoing(&mut env, mode, ttl, now) {
-                        Ok(()) => {
-                            let _ = transport_out_tx.send(SessionEnvelope::new(sid, env)).await;
-                            // Server closed this session: forget its reliability state.
-                            if is_disconnect {
-                                sessions.remove(&sid);
-                            }
-                        }
-                        Err(WindowFull) => {
-                            // Peer a whole window behind on ACKs ⇒ tear the session down.
-                            let d = disconnect_envelope(codec, DisconnectReason::Overloaded, "send window exceeded: peer not acknowledging");
-                            let _ = server_in_tx.send(SessionEnvelope::new(sid, d)).await;
-                            sessions.remove(&sid);
-                        }
-                    }
-                }
-
-                // Timer: per-session retransmits + ACKs → network; drops → server.
-                _ = timer.tick() => {
-                    let now = now_ms(epoch);
-                    let mut retransmits: Vec<(SessionId, Envelope)> = Vec::new();
-                    let mut acks: Vec<(SessionId, Ack)> = Vec::new();
-                    let mut dropped: Vec<(SessionId, u64, u16)> = Vec::new();
-                    for (sid, entry) in sessions.iter_mut() {
-                        let out = entry.pipe.tick(now);
-                        for env in out.retransmits { retransmits.push((*sid, env)); }
-                        for ack in out.acks { acks.push((*sid, ack)); }
-                        for ex in out.dropped { dropped.push((*sid, ex.seq, ex.route_id)); }
-                    }
-                    for (sid, env) in retransmits {
-                        let _ = transport_out_tx.send(SessionEnvelope::new(sid, env)).await;
-                    }
-                    for (sid, ack) in acks {
-                        let _ = transport_out_tx.send(SessionEnvelope::new(sid, ack_envelope(codec, &ack))).await;
-                    }
-                    for (sid, seq, route_id) in dropped {
-                        let _ = server_in_tx.send(SessionEnvelope::new(sid, dropped_envelope(codec, seq, route_id))).await;
-                    }
-                }
-            }
+            sessions: HashMap::new(),
         }
     }
 }
 
-#[inline]
-fn now_ms(epoch: Instant) -> MonoMillisecond {
-    MonoMillisecond::from_millis(epoch.elapsed().as_millis() as u64)
-}
+impl PeerSet for SessionPeers {
+    type Msg = SessionEnvelope;
+    type Key = SessionId;
 
-fn control_envelope(codec: CodecType, route_id: u16, payload: bytes::Bytes) -> Envelope {
-    Envelope::new_simple(
-        CURRENT_PROTOCOL_VERSION,
-        codec.id(),
-        0,
-        route_id,
-        0,
-        EnvelopeFlags::empty(),
-        payload,
-    )
-}
-
-fn ack_envelope(codec: CodecType, ack: &Ack) -> Envelope {
-    let payload = codec.encode(ack).unwrap_or_default();
-    control_envelope(codec, routes::ACK, payload)
-}
-
-fn dropped_envelope(codec: CodecType, seq: u64, route_id: u16) -> Envelope {
-    let payload = codec
-        .encode(&MessageDropped { seq, route_id })
-        .unwrap_or_default();
-    control_envelope(codec, routes::MESSAGE_DROPPED, payload)
-}
-
-fn disconnect_envelope(codec: CodecType, reason: DisconnectReason, message: &str) -> Envelope {
-    let payload = codec
-        .encode(&Disconnect {
-            reason,
-            message: message.to_string(),
-        })
-        .unwrap_or_default();
-    control_envelope(codec, routes::DISCONNECT, payload)
+    fn split(msg: SessionEnvelope) -> (SessionId, Envelope) {
+        (msg.session_id, msg.envelope)
+    }
+    fn join(key: SessionId, env: Envelope) -> SessionEnvelope {
+        SessionEnvelope::new(key, env)
+    }
+    fn pipe_mut(&mut self, key: SessionId) -> &mut ReliablePipe {
+        let cfg = &self.cfg;
+        &mut self
+            .sessions
+            .entry(key)
+            .or_insert_with(|| PerSession::new(cfg))
+            .pipe
+    }
+    fn remove(&mut self, key: SessionId) {
+        self.sessions.remove(&key);
+    }
+    fn for_each_pipe(&mut self, mut f: impl FnMut(SessionId, &mut ReliablePipe)) {
+        for (sid, entry) in self.sessions.iter_mut() {
+            f(*sid, &mut entry.pipe);
+        }
+    }
+    fn inbound_ready(&mut self, key: SessionId, env: &Envelope) -> bool {
+        let cfg = &self.cfg;
+        let entry = self.sessions.entry(key).or_insert_with(|| PerSession::new(cfg));
+        // Withhold game traffic (drop, no ACK) until the handshake lands; control
+        // (route < 100) always passes.
+        env.route_id < GAME_MESSAGES_START || entry.established
+    }
+    fn on_delivered(&mut self, key: SessionId, env: &Envelope) {
+        if env.route_id == routes::HELLO {
+            if let Some(entry) = self.sessions.get_mut(&key) {
+                entry.established = true;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use mokosh_protocol::{ReliabilityMode, CURRENT_PROTOCOL_VERSION};
     use tokio::time::{sleep, timeout, Duration as TDuration};
 
     fn fast_cfg() -> ReliabilityConfig {

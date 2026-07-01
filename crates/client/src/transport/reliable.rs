@@ -21,13 +21,8 @@
 use super::Transport;
 use crate::compat::mpsc;
 use async_trait::async_trait;
-use mokosh_protocol::messages::routes;
-use mokosh_protocol::{
-    Ack, CodecType, Disconnect, DisconnectReason, Envelope, EnvelopeFlags, Inbound, MessageDropped,
-    MonoMillisecond, ReliabilityConfig, ReliabilityMode, ReliablePipe, WindowFull,
-    CURRENT_PROTOCOL_VERSION,
-};
-use std::time::{Duration, Instant};
+use mokosh_protocol::{Bridge, CodecType, Envelope, PeerSet, ReliabilityConfig, ReliablePipe};
+use std::time::Duration;
 
 /// Channel buffer between the decorator and the wrapped transport.
 const LINK_BUFFER: usize = 256;
@@ -68,44 +63,37 @@ impl<T: Transport> ReliableLink<T> {
     }
 }
 
-#[inline]
-fn now_ms(epoch: Instant) -> MonoMillisecond {
-    MonoMillisecond::from_millis(epoch.elapsed().as_millis() as u64)
+/// [`PeerSet`] for a single peer (the client): one pipe, no session map, no
+/// handshake gate — the defaults make it a pure pass-through.
+struct SinglePeer {
+    pipe: ReliablePipe,
 }
 
-/// Builds a bare (unreliable, msg_id 0) control envelope with `payload`.
-fn control_envelope(codec: CodecType, route_id: u16, payload: bytes::Bytes) -> Envelope {
-    Envelope::new_simple(
-        CURRENT_PROTOCOL_VERSION,
-        codec.id(),
-        0,
-        route_id,
-        0,
-        EnvelopeFlags::empty(),
-        payload,
-    )
+impl SinglePeer {
+    fn new(cfg: &ReliabilityConfig) -> Self {
+        Self {
+            pipe: ReliablePipe::new(cfg.clone()),
+        }
+    }
 }
 
-fn ack_envelope(codec: CodecType, ack: &Ack) -> Envelope {
-    let payload = codec.encode(ack).unwrap_or_default();
-    control_envelope(codec, routes::ACK, payload)
-}
+impl PeerSet for SinglePeer {
+    type Msg = Envelope;
+    type Key = ();
 
-fn dropped_envelope(codec: CodecType, seq: u64, route_id: u16) -> Envelope {
-    let payload = codec
-        .encode(&MessageDropped { seq, route_id })
-        .unwrap_or_default();
-    control_envelope(codec, routes::MESSAGE_DROPPED, payload)
-}
-
-fn disconnect_envelope(codec: CodecType, reason: DisconnectReason, message: &str) -> Envelope {
-    let payload = codec
-        .encode(&Disconnect {
-            reason,
-            message: message.to_string(),
-        })
-        .unwrap_or_default();
-    control_envelope(codec, routes::DISCONNECT, payload)
+    fn split(msg: Envelope) -> ((), Envelope) {
+        ((), msg)
+    }
+    fn join(_key: (), env: Envelope) -> Envelope {
+        env
+    }
+    fn pipe_mut(&mut self, _key: ()) -> &mut ReliablePipe {
+        &mut self.pipe
+    }
+    fn remove(&mut self, _key: ()) {}
+    fn for_each_pipe(&mut self, mut f: impl FnMut((), &mut ReliablePipe)) {
+        f((), &mut self.pipe);
+    }
 }
 
 #[async_trait]
@@ -115,7 +103,7 @@ impl<T: Transport> Transport for ReliableLink<T> {
     async fn run(
         self,
         app_in_tx: mpsc::Sender<Envelope>,
-        mut app_out_rx: mpsc::Receiver<Envelope>,
+        app_out_rx: mpsc::Receiver<Envelope>,
     ) -> Result<(), Self::Error> {
         let ReliableLink {
             inner,
@@ -125,7 +113,7 @@ impl<T: Transport> Transport for ReliableLink<T> {
         } = self;
 
         // Channels between this decorator and the wrapped transport.
-        let (inner_in_tx, mut inner_in_rx) = mpsc::channel::<Envelope>(LINK_BUFFER);
+        let (inner_in_tx, inner_in_rx) = mpsc::channel::<Envelope>(LINK_BUFFER);
         let (inner_out_tx, inner_out_rx) = mpsc::channel::<Envelope>(LINK_BUFFER);
 
         // Drive the wrapped transport as an independent task.
@@ -135,82 +123,16 @@ impl<T: Transport> Transport for ReliableLink<T> {
             }
         });
 
-        let mut pipe = ReliablePipe::new(cfg.clone());
-        let default_ttl = cfg.default_ttl;
-        let epoch = Instant::now();
-        let mut timer = tokio::time::interval(retransmit_tick);
-
-        loop {
-            tokio::select! {
-                // App → network: stamp (assign seq + track), then forward.
-                maybe = app_out_rx.recv() => {
-                    let Some(mut env) = maybe else { break; }; // event loop gone
-                    let now = now_ms(epoch);
-                    let mode = ReliabilityMode::from_flags(env.flags);
-                    match pipe.stamp_outgoing(&mut env, mode, default_ttl, now) {
-                        Ok(()) => {
-                            let _ = inner_out_tx.send(env).await;
-                        }
-                        Err(WindowFull) => {
-                            // Peer a whole window behind on ACKs ⇒ tell the app.
-                            let d = disconnect_envelope(
-                                control_codec,
-                                DisconnectReason::Overloaded,
-                                "send window exceeded: server not acknowledging",
-                            );
-                            let _ = app_in_tx.send(d).await;
-                        }
-                    }
-                }
-
-                // Network → app: consume ACKs; dedup/reorder + deliver the rest.
-                maybe = inner_in_rx.recv() => {
-                    let Some(env) = maybe else { break; }; // inner transport ended
-                    let now = now_ms(epoch);
-                    if env.route_id == routes::ACK {
-                        if let Ok(ack) = control_codec.decode::<Ack>(&env.payload) {
-                            pipe.on_ack(&ack, now);
-                        }
-                        continue;
-                    }
-                    match pipe.handle_incoming(env, now) {
-                        Inbound::Deliver(envs) => {
-                            for e in envs {
-                                if app_in_tx.send(e).await.is_err() {
-                                    return Ok(());
-                                }
-                            }
-                        }
-                        Inbound::Consumed => {}
-                        Inbound::Overflow => {
-                            let d = disconnect_envelope(
-                                control_codec,
-                                DisconnectReason::ProtocolViolation,
-                                "ordering buffer overflow",
-                            );
-                            let _ = app_in_tx.send(d).await;
-                        }
-                    }
-                }
-
-                // Timer: retransmits + coalesced ACKs → network; drops → app.
-                _ = timer.tick() => {
-                    let now = now_ms(epoch);
-                    let out = pipe.tick(now);
-                    for env in out.retransmits {
-                        let _ = inner_out_tx.send(env).await;
-                    }
-                    for ack in out.acks {
-                        let _ = inner_out_tx.send(ack_envelope(control_codec, &ack)).await;
-                    }
-                    for ex in out.dropped {
-                        let _ = app_in_tx
-                            .send(dropped_envelope(control_codec, ex.seq, ex.route_id))
-                            .await;
-                    }
-                }
-            }
-        }
+        // The shared bridge runs the reliability state machine below the loop.
+        let bridge = Bridge::new(
+            SinglePeer::new(&cfg),
+            app_in_tx,     // → app (event loop)
+            inner_out_tx,  // → network (wrapped transport)
+            &cfg,
+            control_codec,
+            retransmit_tick,
+        );
+        bridge.run(app_out_rx, inner_in_rx).await;
 
         Ok(())
     }
@@ -220,7 +142,10 @@ impl<T: Transport> Transport for ReliableLink<T> {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use mokosh_protocol::ack_channel;
+    use mokosh_protocol::messages::routes;
+    use mokosh_protocol::{
+        ack_channel, Ack, EnvelopeFlags, ReliabilityMode, CURRENT_PROTOCOL_VERSION,
+    };
     use std::sync::{Arc, Mutex};
     use tokio::time::{sleep, Duration as TDuration};
 
@@ -335,7 +260,15 @@ mod tests {
             ack_bitmap: 0,
         };
         let codec = CodecType::from_id(1).unwrap();
-        let ack_env = control_envelope(codec, routes::ACK, codec.encode(&ack).unwrap());
+        let ack_env = Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            codec.id(),
+            0,
+            routes::ACK,
+            0,
+            EnvelopeFlags::empty(),
+            codec.encode(&ack).unwrap(),
+        );
         inject_tx.send(ack_env).await.unwrap();
 
         sleep(TDuration::from_millis(30)).await;

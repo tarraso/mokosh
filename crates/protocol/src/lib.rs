@@ -44,6 +44,10 @@ pub mod compression;
 pub mod encryption;
 pub mod envelope;
 pub mod error;
+/// Generic reliability *link bridge* shared by the client/server transport
+/// decorators (native-only, tokio-async).
+#[cfg(feature = "native")]
+pub mod link;
 pub mod message_registry;
 pub mod messages;
 pub mod reliability;
@@ -63,6 +67,8 @@ pub use reliability::{
     ExpiredMessage, Inbound, MonoMillisecond, ReceiveOutcome, ReliabilityConfig, ReliabilityMode,
     ReliablePipe, SessionPipe, TickOutput, WindowFull,
 };
+#[cfg(feature = "native")]
+pub use link::{Bridge, PeerSet};
 pub use state::ConnectionState;
 pub use transport::Transport;
 pub use version::{negotiate_version, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION};
