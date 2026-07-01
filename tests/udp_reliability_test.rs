@@ -166,3 +166,111 @@ async fn udp_reliable_ordered_end_to_end() {
         "all reliable-ordered messages should arrive over real UDP, exactly once, in order"
     );
 }
+
+/// Client sends reliable-ordered messages to the server **through `ClientHandle`**
+/// (not the raw transport channel). Proves the handle routes sends via the running
+/// `Client`, so the reliability layer engages: every message arrives at the server
+/// exactly once and in order over real UDP.
+#[tokio::test]
+async fn udp_client_handle_reliable_to_server() {
+    const N: u32 = 12;
+
+    let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let server_addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    // --- Server ---
+    let (srv_in_tx, srv_in_rx) = mpsc::channel(256);
+    let (srv_out_tx, srv_out_rx) = mpsc::channel(256);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+    let server_transport = UdpServer::new(server_addr);
+    let transport_task = tokio::spawn(async move {
+        let _ = server_transport
+            .run(srv_in_tx, srv_out_rx, Some(ready_tx))
+            .await;
+    });
+    ready_rx.await.expect("UDP server failed to start");
+
+    let server_cfg = ServerConfig {
+        reliability: Some(fast_reliability()),
+        retransmit_tick: Duration::from_millis(10),
+        ..Default::default()
+    };
+    let mut server = Server::with_full_config(
+        srv_in_rx, srv_out_tx, json(), json(), server_cfg, None, None, NoCompressor, NoEncryptor,
+    );
+
+    // Server forwards received game messages (route 300) to the test.
+    let (recv_tx, mut recv_rx) = mpsc::channel(256);
+    let server_task = tokio::spawn(async move {
+        loop {
+            match server.tick().await {
+                Ok(Some(GameEvent::GameMessage { envelope, .. })) => {
+                    if envelope.route_id == 300 {
+                        let msg: TestMsg = serde_json::from_slice(&envelope.payload).unwrap();
+                        let _ = recv_tx.send(msg.seq).await;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    });
+
+    // --- Client ---
+    let (cli_in_tx, cli_in_rx) = mpsc::channel(256);
+    let (cli_out_tx, cli_out_rx) = mpsc::channel(256);
+    let (game_tx, _game_rx) = mpsc::channel(256);
+
+    let client_transport = UdpClient::new(server_addr.to_string());
+    let client_transport_task = tokio::spawn(async move {
+        let _ = client_transport.run(cli_in_tx, cli_out_rx).await;
+    });
+
+    let client_cfg = ClientConfig {
+        reliability: Some(fast_reliability()),
+        retransmit_tick: Duration::from_millis(10),
+        ..Default::default()
+    };
+    let mut client = Client::with_full_config(
+        cli_in_rx, cli_out_tx, json(), json(), client_cfg, None, NoCompressor, NoEncryptor,
+        Some(game_tx),
+    );
+    // Grab the handle BEFORE run() consumes the client.
+    let handle = client.handle();
+    client.connect().await.unwrap();
+    let client_task = tokio::spawn(async move { client.run().await });
+
+    // Send through the handle (not the raw transport channel). Retransmission
+    // covers any sent before the handshake completes.
+    for i in 1..=N {
+        handle
+            .send_message(
+                json(),
+                &TestMsg { seq: i, value: i as f32 },
+                ReliabilityMode::ReliableOrdered,
+                None,
+            )
+            .expect("queue send via handle");
+    }
+
+    let mut received: Vec<u32> = Vec::new();
+    while received.len() < N as usize {
+        match tokio::time::timeout(Duration::from_secs(10), recv_rx.recv()).await {
+            Ok(Some(seq)) => received.push(seq),
+            _ => break,
+        }
+    }
+
+    server_task.abort();
+    client_task.abort();
+    transport_task.abort();
+    client_transport_task.abort();
+
+    assert_eq!(
+        received,
+        (1..=N).collect::<Vec<_>>(),
+        "messages sent via ClientHandle must reach the server reliably, in order, exactly once"
+    );
+}

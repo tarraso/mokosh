@@ -211,8 +211,11 @@ struct OutstandingMessage {
 }
 
 /// Tracks outstanding reliable messages and drives retransmission/expiry.
+///
+/// Internal to the reliability layer — driven through [`ReliablePipe`] /
+/// [`SessionPipe`].
 #[derive(Debug)]
-pub struct ReliabilitySender {
+pub(crate) struct ReliabilitySender {
     cfg: ReliabilityConfig,
     outstanding: BTreeMap<u64, OutstandingMessage>,
     srtt: Option<f64>,
@@ -370,15 +373,8 @@ impl ReliabilitySender {
         expired
     }
 
-    /// Earliest time the sender next needs servicing (retransmit or expiry).
-    pub fn next_deadline(&self) -> Option<MonoMillisecond> {
-        self.outstanding
-            .values()
-            .map(|m| m.next_retransmit_at.min(m.expires_at))
-            .min()
-    }
-
-    /// Number of messages awaiting acknowledgement.
+    /// Number of messages awaiting acknowledgement (test helper).
+    #[cfg(test)]
     pub fn outstanding_len(&self) -> usize {
         self.outstanding.len()
     }
@@ -425,8 +421,11 @@ impl ReliabilitySender {
 // ============================================================================
 
 /// Deduplicates, reorders, and acknowledges inbound reliable messages.
+///
+/// Internal to the reliability layer — driven through [`ReliablePipe`] /
+/// [`SessionPipe`].
 #[derive(Debug)]
-pub struct ReliabilityReceiver {
+pub(crate) struct ReliabilityReceiver {
     cfg: ReliabilityConfig,
     channel: u8,
     /// Highest reliable sequence seen (frontier for `drain_ordered`'s skip).
@@ -519,15 +518,6 @@ impl ReliabilityReceiver {
         None
     }
 
-    /// Earliest time an ACK should be flushed, if one is pending.
-    pub fn next_ack_deadline(&self) -> Option<MonoMillisecond> {
-        if self.pending_ack {
-            self.ack_due_at
-        } else {
-            None
-        }
-    }
-
     fn deliver_ordered(&mut self, seq: u64, envelope: Envelope) -> ReceiveOutcome {
         use std::cmp::Ordering;
         match seq.cmp(&self.deliver_next) {
@@ -613,16 +603,16 @@ impl ReliabilityReceiver {
 
 /// A sender + receiver pair over a single sequence space.
 #[derive(Debug)]
-pub struct ReliabilityChannel {
+pub(crate) struct ReliabilityChannel {
     /// Outgoing reliable-message tracker.
-    pub sender: ReliabilitySender,
+    sender: ReliabilitySender,
     /// Inbound dedup/ordering/ACK tracker.
-    pub receiver: ReliabilityReceiver,
+    receiver: ReliabilityReceiver,
 }
 
 impl ReliabilityChannel {
     /// Creates a channel for the given channel id.
-    pub fn new(cfg: ReliabilityConfig, channel: u8) -> Self {
+    fn new(cfg: ReliabilityConfig, channel: u8) -> Self {
         Self {
             sender: ReliabilitySender::new(cfg.clone()),
             receiver: ReliabilityReceiver::new(cfg, channel),
@@ -636,35 +626,25 @@ impl ReliabilityChannel {
 /// (control, route_id < 100) can be made reliable without colliding with game
 /// traffic (route_id >= 100).
 #[derive(Debug)]
-pub struct ReliabilityState {
+pub(crate) struct ReliabilityState {
     /// Control channel (HELLO/AUTH handshake).
-    pub control: ReliabilityChannel,
+    control: ReliabilityChannel,
     /// Game channel (application messages).
-    pub game: ReliabilityChannel,
+    game: ReliabilityChannel,
 }
 
 impl ReliabilityState {
     /// Creates fresh reliability state from a config.
-    pub fn new(cfg: ReliabilityConfig) -> Self {
+    fn new(cfg: ReliabilityConfig) -> Self {
         Self {
             control: ReliabilityChannel::new(cfg.clone(), ack_channel::CONTROL),
             game: ReliabilityChannel::new(cfg, ack_channel::GAME),
         }
     }
 
-    /// Selects the channel a given route belongs to.
-    #[inline]
-    pub fn channel_for_route(&mut self, route_id: u16) -> &mut ReliabilityChannel {
-        if route_id < GAME_MESSAGES_START {
-            &mut self.control
-        } else {
-            &mut self.game
-        }
-    }
-
     /// Selects a channel by ACK channel id (`ack_channel::CONTROL`/`GAME`).
     #[inline]
-    pub fn channel_by_id(&mut self, channel: u8) -> Option<&mut ReliabilityChannel> {
+    fn channel_by_id(&mut self, channel: u8) -> Option<&mut ReliabilityChannel> {
         match channel {
             ack_channel::CONTROL => Some(&mut self.control),
             ack_channel::GAME => Some(&mut self.game),
@@ -696,6 +676,242 @@ impl ReliabilityState {
             out.push(a);
         }
         out
+    }
+}
+
+// ============================================================================
+// SessionPipe: the link-layer facade over reliability state
+// ============================================================================
+
+/// Returned by [`SessionPipe::stamp_outgoing`] when the reliable in-flight
+/// window for the target channel is full (the peer is a whole window behind on
+/// ACKs). No sequence number is consumed and nothing is tracked — the caller
+/// should tear the connection down (server → `Overloaded`; client →
+/// `SendWindowExceeded`). This is terminal, **not** retry-style backpressure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowFull;
+
+/// Work produced by one [`SessionPipe::tick`]: messages to (re)send and reports
+/// to surface. Empty for a pass-through pipe.
+#[derive(Debug, Default)]
+pub struct TickOutput {
+    /// Reliable envelopes whose retransmit timer fired — resend them verbatim.
+    pub retransmits: Vec<Envelope>,
+    /// Coalesced ACKs to send back to the peer (encode + send on the ACK route).
+    pub acks: Vec<Ack>,
+    /// Reliable messages given up on (TTL / retry cap) — surface as drops.
+    pub dropped: Vec<ExpiredMessage>,
+}
+
+/// One peer's reliability state plus its outgoing sequence counters.
+///
+/// This is the reusable unit the event loops drive through [`SessionPipe`] and
+/// that the transport-layer reliability decorator (link layer) will hold one of
+/// per peer. It owns sequence assignment so callers never touch raw sequence
+/// numbers.
+#[derive(Debug)]
+pub struct ReliablePipe {
+    state: ReliabilityState,
+    /// Contiguous sequence for reliable game messages (gap-free ordered stream).
+    reliable_game_seq: u64,
+    /// Independent sequence for `UnreliableSequenced` game messages.
+    sequenced_game_seq: u64,
+    /// Contiguous sequence for reliable control messages (HELLO_OK / AUTH).
+    control_seq: u64,
+}
+
+impl ReliablePipe {
+    /// Creates a fresh reliable pipe from a config.
+    pub fn new(cfg: ReliabilityConfig) -> Self {
+        Self {
+            state: ReliabilityState::new(cfg),
+            reliable_game_seq: 1,
+            sequenced_game_seq: 1,
+            control_seq: 1,
+        }
+    }
+
+    #[inline]
+    fn is_control(route_id: u16) -> bool {
+        route_id < GAME_MESSAGES_START
+    }
+
+    /// Assigns the sequence number into `env.msg_id` and tracks the envelope for
+    /// retransmission (reliable modes only). The envelope's flags must already
+    /// encode `mode`; the channel (control vs game) is chosen by `env.route_id`.
+    ///
+    /// Returns [`WindowFull`] *before* consuming a sequence number if the
+    /// reliable window for the channel is full.
+    pub fn stamp_outgoing(
+        &mut self,
+        env: &mut Envelope,
+        mode: ReliabilityMode,
+        ttl: Duration,
+        now: MonoMillisecond,
+    ) -> Result<(), WindowFull> {
+        let is_control = Self::is_control(env.route_id);
+        let channel = if is_control {
+            &mut self.state.control
+        } else {
+            &mut self.state.game
+        };
+
+        if mode.is_reliable() && channel.sender.is_full() {
+            return Err(WindowFull);
+        }
+
+        env.msg_id = match mode {
+            ReliabilityMode::Reliable | ReliabilityMode::ReliableOrdered => {
+                let counter = if is_control {
+                    &mut self.control_seq
+                } else {
+                    &mut self.reliable_game_seq
+                };
+                let id = *counter;
+                *counter = counter.wrapping_add(1);
+                id
+            }
+            ReliabilityMode::UnreliableSequenced => {
+                let id = self.sequenced_game_seq;
+                self.sequenced_game_seq = self.sequenced_game_seq.wrapping_add(1);
+                id
+            }
+            ReliabilityMode::Unreliable => 0,
+        };
+
+        if mode.is_reliable() {
+            channel.sender.on_send(env, mode, ttl, now);
+        }
+        Ok(())
+    }
+
+    /// Feeds an inbound envelope through the appropriate channel's receiver
+    /// (dedup / ordering). Channel is chosen by `env.route_id`.
+    pub fn process_incoming(&mut self, env: Envelope, now: MonoMillisecond) -> ReceiveOutcome {
+        let channel = if Self::is_control(env.route_id) {
+            &mut self.state.control
+        } else {
+            &mut self.state.game
+        };
+        channel.receiver.on_receive(env, now)
+    }
+
+    /// Clears acknowledged outstanding messages for the ACK's channel.
+    pub fn on_ack(&mut self, ack: &Ack, now: MonoMillisecond) {
+        if let Some(channel) = self.state.channel_by_id(ack.channel) {
+            channel.sender.on_ack(ack, now);
+        }
+    }
+
+    /// Drives retransmission, expiry and ACK flushing for one tick.
+    ///
+    /// Expiry is collected before retransmits so a timed-out message is not
+    /// resent on the same tick.
+    pub fn tick(&mut self, now: MonoMillisecond) -> TickOutput {
+        TickOutput {
+            dropped: self.state.poll_expired(now),
+            retransmits: self.state.poll_retransmits(now),
+            acks: self.state.build_acks(now),
+        }
+    }
+}
+
+/// The link-layer pipe an event loop drives, uniform across transports.
+///
+/// Reliable transports (WebSocket / reliability disabled) use
+/// [`Passthrough`](SessionPipe::Passthrough): a bare monotonic `msg_id` and no
+/// ACK/retransmit/ordering — zero cost. Unreliable transports (UDP) use
+/// [`Reliable`](SessionPipe::Reliable), the full state machine. This collapses
+/// the former `if reliability.is_some()` branching into one polymorphic surface
+/// and is the unit the reliability decorator will later own per peer.
+#[derive(Debug)]
+pub enum SessionPipe {
+    /// Pass-through: assign a legacy monotonic game `msg_id`; control carries 0.
+    Passthrough {
+        /// Monotonic counter for game-message `msg_id`s (replay-window input).
+        game_seq: u64,
+    },
+    /// Full reliability state machine for an unreliable transport.
+    Reliable(Box<ReliablePipe>),
+}
+
+impl SessionPipe {
+    /// A pass-through pipe (reliable transport / reliability disabled).
+    pub fn passthrough() -> Self {
+        SessionPipe::Passthrough { game_seq: 1 }
+    }
+
+    /// A reliable pipe for an unreliable transport.
+    pub fn reliable(cfg: ReliabilityConfig) -> Self {
+        SessionPipe::Reliable(Box::new(ReliablePipe::new(cfg)))
+    }
+
+    /// Builds a pipe from an optional config: `Some` → reliable, `None` →
+    /// pass-through.
+    pub fn from_config(cfg: Option<&ReliabilityConfig>) -> Self {
+        match cfg {
+            Some(c) => Self::reliable(c.clone()),
+            None => Self::passthrough(),
+        }
+    }
+
+    /// Whether this pipe runs the reliability state machine (ACK/retransmit/
+    /// ordering). Used to negotiate the handshake flag and to gate the legacy
+    /// replay-protection path (bypassed when reliability owns dedup).
+    #[inline]
+    pub fn is_reliable(&self) -> bool {
+        matches!(self, SessionPipe::Reliable(_))
+    }
+
+    /// Assigns the outgoing sequence number into `env.msg_id` (and tracks
+    /// reliable envelopes). See [`ReliablePipe::stamp_outgoing`]. Pass-through
+    /// assigns a monotonic game `msg_id` (control carries 0) and never fails.
+    pub fn stamp_outgoing(
+        &mut self,
+        env: &mut Envelope,
+        mode: ReliabilityMode,
+        ttl: Duration,
+        now: MonoMillisecond,
+    ) -> Result<(), WindowFull> {
+        match self {
+            SessionPipe::Passthrough { game_seq } => {
+                if env.route_id >= GAME_MESSAGES_START {
+                    env.msg_id = *game_seq;
+                    *game_seq = game_seq.wrapping_add(1);
+                } else {
+                    env.msg_id = 0;
+                }
+                Ok(())
+            }
+            SessionPipe::Reliable(p) => p.stamp_outgoing(env, mode, ttl, now),
+        }
+    }
+
+    /// Feeds an inbound reliable/sequenced envelope through the state machine.
+    /// For a pass-through pipe there is no dedup/ordering, so the envelope is
+    /// delivered as-is (callers gate this on [`is_reliable`](Self::is_reliable)
+    /// and apply their own handling for the pass-through case).
+    pub fn process_incoming(&mut self, env: Envelope, now: MonoMillisecond) -> ReceiveOutcome {
+        match self {
+            SessionPipe::Reliable(p) => p.process_incoming(env, now),
+            SessionPipe::Passthrough { .. } => ReceiveOutcome::Deliver(env),
+        }
+    }
+
+    /// Clears acknowledged outstanding messages (no-op for pass-through).
+    pub fn on_ack(&mut self, ack: &Ack, now: MonoMillisecond) {
+        if let SessionPipe::Reliable(p) = self {
+            p.on_ack(ack, now);
+        }
+    }
+
+    /// Drives retransmits / ACK flush / drop reporting for one tick (empty for
+    /// pass-through).
+    pub fn tick(&mut self, now: MonoMillisecond) -> TickOutput {
+        match self {
+            SessionPipe::Reliable(p) => p.tick(now),
+            SessionPipe::Passthrough { .. } => TickOutput::default(),
+        }
     }
 }
 
@@ -952,7 +1168,7 @@ mod tests {
             r.on_receive(env(5, 100, ReliabilityMode::Unreliable), t(0)),
             ReceiveOutcome::Deliver(_)
         ));
-        assert!(r.next_ack_deadline().is_none()); // no ack for unreliable
+        assert!(r.build_ack(t(100)).is_none()); // no ack for unreliable
     }
 
     #[test]
@@ -1083,10 +1299,92 @@ mod tests {
     #[test]
     fn state_routes_by_channel() {
         let mut st = ReliabilityState::new(cfg());
-        assert_eq!(st.channel_for_route(5).receiver.channel, ack_channel::CONTROL);
-        assert_eq!(st.channel_for_route(100).receiver.channel, ack_channel::GAME);
+        assert_eq!(st.control.receiver.channel, ack_channel::CONTROL);
+        assert_eq!(st.game.receiver.channel, ack_channel::GAME);
         assert!(st.channel_by_id(ack_channel::CONTROL).is_some());
         assert!(st.channel_by_id(ack_channel::GAME).is_some());
         assert!(st.channel_by_id(99).is_none());
+    }
+
+    // ---- SessionPipe ----
+
+    fn blank_env(route_id: u16, mode: ReliabilityMode) -> Envelope {
+        Envelope::new_simple(1, 1, 0, route_id, 0, mode.to_flags(), Bytes::from_static(b"x"))
+    }
+
+    #[test]
+    fn passthrough_assigns_monotonic_game_id_and_zero_control() {
+        let mut p = SessionPipe::passthrough();
+        assert!(!p.is_reliable());
+        let mut g1 = blank_env(100, ReliabilityMode::Reliable);
+        let mut g2 = blank_env(100, ReliabilityMode::Reliable);
+        p.stamp_outgoing(&mut g1, ReliabilityMode::Reliable, Duration::from_secs(10), t(0)).unwrap();
+        p.stamp_outgoing(&mut g2, ReliabilityMode::Reliable, Duration::from_secs(10), t(0)).unwrap();
+        assert_eq!(g1.msg_id, 1);
+        assert_eq!(g2.msg_id, 2);
+        // Control carries no sequence in pass-through.
+        let mut c = blank_env(5, ReliabilityMode::ReliableOrdered);
+        p.stamp_outgoing(&mut c, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0)).unwrap();
+        assert_eq!(c.msg_id, 0);
+        // Pass-through never tracks: tick is empty.
+        let out = p.tick(t(100));
+        assert!(out.retransmits.is_empty() && out.acks.is_empty() && out.dropped.is_empty());
+    }
+
+    #[test]
+    fn reliable_pipe_assigns_contiguous_spaces_and_tracks() {
+        let mut p = SessionPipe::reliable(cfg());
+        assert!(p.is_reliable());
+        // Reliable game messages get a contiguous space starting at 1.
+        let mut g1 = blank_env(100, ReliabilityMode::ReliableOrdered);
+        let mut g2 = blank_env(100, ReliabilityMode::ReliableOrdered);
+        p.stamp_outgoing(&mut g1, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0)).unwrap();
+        p.stamp_outgoing(&mut g2, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0)).unwrap();
+        assert_eq!((g1.msg_id, g2.msg_id), (1, 2));
+        // UnreliableSequenced has its own space (also starts at 1).
+        let mut s = blank_env(100, ReliabilityMode::UnreliableSequenced);
+        p.stamp_outgoing(&mut s, ReliabilityMode::UnreliableSequenced, Duration::from_secs(10), t(0)).unwrap();
+        assert_eq!(s.msg_id, 1);
+        // Unreliable carries no sequence.
+        let mut u = blank_env(100, ReliabilityMode::Unreliable);
+        p.stamp_outgoing(&mut u, ReliabilityMode::Unreliable, Duration::from_secs(10), t(0)).unwrap();
+        assert_eq!(u.msg_id, 0);
+        // Control reliable uses an independent contiguous space.
+        let mut c = blank_env(5, ReliabilityMode::ReliableOrdered);
+        p.stamp_outgoing(&mut c, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0)).unwrap();
+        assert_eq!(c.msg_id, 1);
+        // All three tracked reliable messages (2 game + 1 control) retransmit
+        // after the RTO; the unreliable/sequenced ones are not tracked.
+        let out = p.tick(t(200));
+        assert_eq!(out.retransmits.len(), 3);
+    }
+
+    #[test]
+    fn reliable_pipe_window_full_is_terminal_and_consumes_no_seq() {
+        let mut c = cfg();
+        c.send_window = 2;
+        let mut p = SessionPipe::reliable(c);
+        for _ in 0..2 {
+            let mut e = blank_env(100, ReliabilityMode::ReliableOrdered);
+            p.stamp_outgoing(&mut e, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0)).unwrap();
+        }
+        let mut e = blank_env(100, ReliabilityMode::ReliableOrdered);
+        assert_eq!(
+            p.stamp_outgoing(&mut e, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0)),
+            Err(WindowFull)
+        );
+        // No sequence was consumed (msg_id untouched).
+        assert_eq!(e.msg_id, 0);
+    }
+
+    #[test]
+    fn reliable_pipe_roundtrip_ack_clears_and_drains() {
+        let mut p = SessionPipe::reliable(cfg());
+        // Receive an inbound ordered game message → deliver + schedule ACK.
+        let inbound = env(1, 100, ReliabilityMode::ReliableOrdered);
+        assert!(matches!(p.process_incoming(inbound, t(0)), ReceiveOutcome::Deliver(_)));
+        let out = p.tick(t(50));
+        assert_eq!(out.acks.len(), 1);
+        assert_eq!(out.acks[0].cumulative_ack, 1);
     }
 }

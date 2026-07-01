@@ -7,7 +7,8 @@ use godot::classes::{Node, INode};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use mokosh_protocol::{Envelope, CodecType};
-use mokosh_client::{Client, transport::websocket::WebSocketClient};
+use mokosh_protocol::reliability::ReliabilityMode;
+use mokosh_client::{Client, ClientHandle, transport::websocket::WebSocketClient};
 use mokosh_protocol::Transport;
 
 use crate::runtime::{AsyncRuntime, EventQueue};
@@ -38,8 +39,9 @@ pub struct NetClient {
     /// Shared async runtime
     runtime: Option<Arc<AsyncRuntime>>,
 
-    /// Channel to send envelopes to the client (for sending messages from Godot)
-    outgoing_tx: Option<mpsc::Sender<Envelope>>,
+    /// Handle for sending through the running client (engages reliability;
+    /// previously a raw transport `outgoing_tx` clone was used, which bypassed it)
+    handle: Option<ClientHandle>,
 
     /// Channel to receive game messages from the client
     game_messages_rx: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<Envelope>>>>,
@@ -52,9 +54,6 @@ pub struct NetClient {
 
     /// Codec to use for serialization (JSON by default)
     codec: CodecType,
-
-    /// Message ID counter for outgoing messages
-    msg_id_counter: u64,
 }
 
 #[godot_api]
@@ -63,12 +62,11 @@ impl INode for NetClient {
         Self {
             base,
             runtime: None,
-            outgoing_tx: None,
+            handle: None,
             game_messages_rx: None,
             events: Arc::new(EventQueue::new()),
             is_connected: false,
             codec: CodecType::from_id(1).unwrap(), // JSON by default
-            msg_id_counter: 1,
         }
     }
 
@@ -172,10 +170,6 @@ impl NetClient {
         // Create channel for receiving game messages
         let (game_messages_tx, game_messages_rx) = mpsc::channel(100);
 
-        // Clone outgoing_tx for sending messages from Godot
-        let outgoing_tx_clone = transport_outgoing_tx.clone();
-        self.outgoing_tx = Some(outgoing_tx_clone);
-
         // Store game_messages_rx for polling in process()
         self.game_messages_rx = Some(Arc::new(tokio::sync::Mutex::new(game_messages_rx)));
 
@@ -185,6 +179,10 @@ impl NetClient {
             transport_outgoing_tx,
             Some(game_messages_tx),
         );
+
+        // Grab a handle for sending *through* the client before `run()` consumes
+        // it — this routes sends through the reliability layer (no raw bypass).
+        self.handle = Some(client.handle());
 
         // Mark as connected (will be updated by client events)
         self.is_connected = false;
@@ -231,37 +229,15 @@ impl NetClient {
     /// Disconnect from server
     #[func]
     pub fn disconnect(&mut self) {
-        if let Some(tx) = &self.outgoing_tx {
-            // Send DISCONNECT message to server
-            let disconnect = mokosh_protocol::messages::Disconnect {
-                reason: mokosh_protocol::messages::DisconnectReason::ClientRequested,
-                message: "Client disconnecting".to_string(),
-            };
-
-            // Serialize disconnect message
-            let payload = self.codec.encode(&disconnect).unwrap_or_default();
-
-            let disconnect_envelope = mokosh_protocol::Envelope::new_simple(
-                mokosh_protocol::CURRENT_PROTOCOL_VERSION,
-                self.codec.id(),
-                0,
-                mokosh_protocol::messages::routes::DISCONNECT,
-                0,
-                mokosh_protocol::EnvelopeFlags::RELIABLE,
-                payload,
+        if let Some(handle) = &self.handle {
+            // Route the DISCONNECT through the client (best-effort).
+            let _ = handle.disconnect(
+                mokosh_protocol::messages::DisconnectReason::ClientRequested,
+                "Client disconnecting",
             );
-
-            let tx_clone = tx.clone();
-            if let Some(runtime) = &self.runtime {
-                runtime.handle().spawn(async move {
-                    let _ = tx_clone.send(disconnect_envelope).await;
-                    // Small delay to ensure message is sent
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                });
-            }
         }
 
-        self.outgoing_tx = None;
+        self.handle = None;
         self.game_messages_rx = None;
         self.is_connected = false;
         eprintln!("NetClient: Disconnected");
@@ -281,33 +257,20 @@ impl NetClient {
     pub fn send_message(&mut self, message: GString) {
         let msg_str = message.to_string();
 
-        if let Some(tx) = &self.outgoing_tx {
-            // Convert string to Bytes (JSON is already encoded as string)
-            let payload = bytes::Bytes::from(msg_str.as_bytes().to_vec());
+        if let Some(handle) = &self.handle {
+            // The GDScript JSON string is already the JSON-codec-encoded payload.
+            let payload = bytes::Bytes::from(msg_str.into_bytes());
 
-            // Get and increment message ID
-            let msg_id = self.msg_id_counter;
-            self.msg_id_counter += 1;
-
-            // Create envelope
-            let envelope = Envelope::new_simple(
-                mokosh_protocol::CURRENT_PROTOCOL_VERSION,
-                self.codec.id(),
-                0, // schema_hash
+            // Route through the client (sequence + reliability handled there).
+            // `Reliable` keeps the legacy bare-RELIABLE flag over WebSocket.
+            if let Err(e) = handle.send_encoded(
                 100, // Default route_id for game messages
-                msg_id,
-                mokosh_protocol::EnvelopeFlags::RELIABLE,
+                0,   // schema_hash
                 payload,
-            );
-
-            // Send envelope
-            let tx_clone = tx.clone();
-            if let Some(runtime) = &self.runtime {
-                runtime.handle().spawn(async move {
-                    if let Err(e) = tx_clone.send(envelope).await {
-                        eprintln!("Error sending envelope: {}", e);
-                    }
-                });
+                ReliabilityMode::Reliable,
+                None, // default TTL
+            ) {
+                eprintln!("Error sending message: {}", e);
             }
         } else {
             eprintln!("Error: Not connected to server");

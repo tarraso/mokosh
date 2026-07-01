@@ -31,7 +31,7 @@ use mokosh_protocol::{
         routes, Ack, AuthRequest, AuthResponse, Disconnect, DisconnectReason, Hello, HelloError,
         HelloOk, Ping, Pong, GAME_MESSAGES_START,
     },
-    reliability::{ExpiredMessage, ReceiveOutcome, ReliabilityConfig, ReliabilityMode, ReliabilityState, MonoMillisecond},
+    reliability::{ExpiredMessage, MonoMillisecond, ReceiveOutcome, ReliabilityConfig, ReliabilityMode, SessionPipe},
     CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageRegistry, CURRENT_PROTOCOL_VERSION,
     MIN_PROTOCOL_VERSION,
 };
@@ -75,6 +75,96 @@ impl Default for ClientConfig {
     }
 }
 
+/// A request handed to a running [`Client`] via [`ClientHandle`].
+#[derive(Debug)]
+enum ClientCommand {
+    /// Send an already-codec-encoded game payload (route_id >= 100).
+    SendGame {
+        route_id: u16,
+        schema_hash: u64,
+        payload: bytes::Bytes,
+        mode: ReliabilityMode,
+        ttl: Option<Duration>,
+    },
+    /// Send a best-effort DISCONNECT to the server.
+    Disconnect {
+        reason: DisconnectReason,
+        message: String,
+    },
+}
+
+/// A cloneable handle for sending through a **running** [`Client`].
+///
+/// `Client::run` consumes the client, so there is otherwise no way to send once
+/// the loop is running. Apps used to work around this by cloning the transport's
+/// raw `outgoing_tx` and pushing envelopes directly — which **bypasses the
+/// `Client`** and therefore the reliability layer (ACK / retransmit / ordering)
+/// as well as sequencing/codec/compression/encryption.
+///
+/// Obtain a handle with [`Client::handle`] *before* calling `run`, then send via
+/// the handle so traffic is routed through the `Client` and reliability engages.
+/// Sends are non-blocking (suitable for sync game-loop / UI callbacks).
+#[derive(Clone)]
+pub struct ClientHandle {
+    cmd_tx: mpsc::Sender<ClientCommand>,
+}
+
+impl ClientHandle {
+    /// Queues an already-codec-encoded game payload (route_id >= 100) for the
+    /// running client to send with the given reliability `mode`. `ttl: None`
+    /// uses the configured default. Non-blocking; returns `Err` only if the
+    /// client loop has stopped or its command queue is full.
+    pub fn send_encoded(
+        &self,
+        route_id: u16,
+        schema_hash: u64,
+        payload: bytes::Bytes,
+        mode: ReliabilityMode,
+        ttl: Option<Duration>,
+    ) -> Result<(), ClientError> {
+        self.cmd_tx
+            .clone()
+            .try_send(ClientCommand::SendGame {
+                route_id,
+                schema_hash,
+                payload,
+                mode,
+                ttl,
+            })
+            .map_err(|_| ClientError::ChannelSendError)
+    }
+
+    /// Queues a typed game message, serializing it with `codec` (use the same
+    /// codec the client was configured with). See [`send_encoded`](Self::send_encoded).
+    pub fn send_message<T: mokosh_protocol::GameMessage + serde::Serialize>(
+        &self,
+        codec: CodecType,
+        message: &T,
+        mode: ReliabilityMode,
+        ttl: Option<Duration>,
+    ) -> Result<(), ClientError> {
+        let payload = codec
+            .encode(message)
+            .map_err(|e| ClientError::CodecError(e.to_string()))?;
+        self.send_encoded(T::ROUTE_ID, T::SCHEMA_HASH, payload, mode, ttl)
+    }
+
+    /// Queues a best-effort DISCONNECT to the server.
+    pub fn disconnect(
+        &self,
+        reason: DisconnectReason,
+        message: impl Into<String>,
+    ) -> Result<(), ClientError> {
+        self.cmd_tx
+            .clone()
+            .try_send(ClientCommand::Disconnect {
+                reason,
+                message: message.into(),
+            })
+            .map_err(|_| ClientError::ChannelSendError)
+    }
+}
+
 /// Client event loop handler
 ///
 /// The client sends envelopes through the outgoing channel and receives
@@ -103,14 +193,10 @@ where
     /// Codec to use for game messages
     game_codec: CodecType,
 
-    /// Message ID counter for game messages (legacy path; reliability disabled)
-    msg_id_counter: u64,
-
-    /// Contiguous sequence for reliable game messages (reliability enabled)
-    reliable_game_seq: u64,
-
-    /// Sequence for `UnreliableSequenced` game messages (independent space)
-    sequenced_game_seq: u64,
+    /// Link-layer pipe: assigns outgoing sequence numbers and (over an unreliable
+    /// transport) runs the ACK/retransmit/ordering state machine. Pass-through
+    /// when reliability is disabled (WebSocket / BrowserWebSocket).
+    pipe: SessionPipe,
 
     /// Last time a message was received (for connection timeout detection)
     last_received: Instant,
@@ -136,17 +222,17 @@ where
     /// Optional channel to forward received game messages to application
     game_messages_tx: Option<mpsc::Sender<Envelope>>,
 
-    /// Per-connection reliability state (None unless reliability is enabled)
-    reliability: Option<ReliabilityState>,
-
-    /// Counter for reliable control messages (HELLO/AUTH) sent to the server
-    control_msg_id_counter: u64,
-
     /// Optional channel notified when a reliable message is dropped (TTL/retry exhausted)
     dropped_tx: Option<mpsc::Sender<ExpiredMessage>>,
 
     /// Monotonic epoch for converting wall-clock into reliability [`MonoMillisecond`]s
     reliability_epoch: Instant,
+
+    /// Sender kept so [`Client::handle`] can mint cloneable [`ClientHandle`]s.
+    cmd_tx: mpsc::Sender<ClientCommand>,
+
+    /// Receiver drained by [`Client::run`]: app sends arriving via a `ClientHandle`.
+    cmd_rx: mpsc::Receiver<ClientCommand>,
 }
 
 // Default implementation (no compression, no encryption)
@@ -245,10 +331,8 @@ where
         game_messages_tx: Option<mpsc::Sender<Envelope>>,
     ) -> Self {
         let now = Instant::now();
-        let reliability = config
-            .reliability
-            .as_ref()
-            .map(|cfg| ReliabilityState::new(cfg.clone()));
+        let pipe = SessionPipe::from_config(config.reliability.as_ref());
+        let (cmd_tx, cmd_rx) = mpsc::channel(100);
 
         Self {
             incoming_rx,
@@ -256,9 +340,7 @@ where
             state: ConnectionState::Closed,
             control_codec,
             game_codec,
-            msg_id_counter: 1, // Start message IDs from 1
-            reliable_game_seq: 1,
-            sequenced_game_seq: 1,
+            pipe,
             last_received: now,
             last_ping_sent: now,
             last_rtt: None,
@@ -267,10 +349,10 @@ where
             compressor,
             encryptor,
             game_messages_tx,
-            reliability,
-            control_msg_id_counter: 1,
             dropped_tx: None,
             reliability_epoch: now,
+            cmd_tx,
+            cmd_rx,
         }
     }
 
@@ -278,6 +360,44 @@ where
     /// were dropped after exhausting their TTL / retry budget.
     pub fn set_dropped_channel(&mut self, tx: mpsc::Sender<ExpiredMessage>) {
         self.dropped_tx = Some(tx);
+    }
+
+    /// Returns a cloneable [`ClientHandle`] for sending through this client while
+    /// it runs. Obtain it **before** calling [`run`](Self::run) (which consumes
+    /// the client); sends made through the handle are routed via the `Client`, so
+    /// the reliability layer engages (unlike pushing onto the raw transport
+    /// channel).
+    pub fn handle(&self) -> ClientHandle {
+        ClientHandle {
+            cmd_tx: self.cmd_tx.clone(),
+        }
+    }
+
+    /// Executes a command received from a [`ClientHandle`] on the event loop.
+    async fn process_command(&mut self, cmd: ClientCommand) {
+        match cmd {
+            ClientCommand::SendGame {
+                route_id,
+                schema_hash,
+                payload,
+                mode,
+                ttl,
+            } => {
+                let ttl = ttl.unwrap_or_else(|| self.default_reliable_ttl());
+                if let Err(e) = self.send_encoded(route_id, schema_hash, payload, mode, ttl).await {
+                    tracing::warn!(route_id, error = %e, "Failed to send game message via handle");
+                }
+            }
+            ClientCommand::Disconnect { reason, message } => {
+                let disconnect = Disconnect { reason, message };
+                if let Err(e) = self
+                    .send_control_message(routes::DISCONNECT, &disconnect)
+                    .await
+                {
+                    tracing::warn!(error = %e, "Failed to send DISCONNECT via handle");
+                }
+            }
+        }
     }
 
     /// Initiates connection by sending HELLO message
@@ -301,7 +421,7 @@ where
             min_protocol_version: MIN_PROTOCOL_VERSION,
             codec_id: self.game_codec.id(),
             schema_hash,
-            reliability: self.reliability.is_some(),
+            reliability: self.pipe.is_reliable(),
         };
 
         self.send_reliable_control_message(routes::HELLO, &hello).await?;
@@ -417,8 +537,8 @@ where
 
         // Retransmission/ACK timer (only when reliability is enabled).
         let mut retransmit_interval = self
-            .reliability
-            .is_some()
+            .pipe
+            .is_reliable()
             .then(|| crate::compat::time::interval(self.config.retransmit_tick));
 
         loop {
@@ -447,6 +567,13 @@ where
                         tracing::error!(error = %e, "Periodic task error");
                         break;
                     }
+                }
+
+                // App sends arriving via a ClientHandle (routed through the client
+                // so reliability engages). The client keeps its own `cmd_tx`, so
+                // this never resolves to `None` from all handles being dropped.
+                Some(cmd) = self.cmd_rx.recv() => {
+                    self.process_command(cmd).await;
                 }
 
                 Some(_) = retransmit_fut => {
@@ -484,6 +611,14 @@ where
                             tracing::info!("Client shutting down: incoming channel closed");
                             break;
                         }
+                    }
+                }
+
+                // App sends arriving via a ClientHandle (routed through the client
+                // so codec/compression/encryption are applied consistently).
+                cmd = self.cmd_rx.next() => {
+                    if let Some(cmd) = cmd {
+                        self.process_command(cmd).await;
                     }
                 }
 
@@ -577,15 +712,9 @@ where
         // sent ReliableOrdered; best-effort control (PING/PONG/DISCONNECT) carries
         // a bare RELIABLE bit and must NOT be acknowledged.
         let sequenced = envelope.flags.contains(EnvelopeFlags::SEQUENCED);
-        if sequenced && self.reliability.is_some() {
+        if sequenced && self.pipe.is_reliable() {
             let now = self.now_mono();
-            let outcome = self
-                .reliability
-                .as_mut()
-                .unwrap()
-                .control
-                .receiver
-                .on_receive(envelope, now);
+            let outcome = self.pipe.process_incoming(envelope, now);
             match outcome {
                 ReceiveOutcome::Deliver(e) => self.dispatch_control(e).await,
                 ReceiveOutcome::DeliverMany(es) => {
@@ -630,11 +759,7 @@ where
             .decode(&envelope.payload)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to parse ACK: {}", e)))?;
         let now = self.now_mono();
-        if let Some(rel) = self.reliability.as_mut() {
-            if let Some(ch) = rel.channel_by_id(ack.channel) {
-                ch.sender.on_ack(&ack, now);
-            }
-        }
+        self.pipe.on_ack(&ack, now);
         Ok(())
     }
 
@@ -642,16 +767,10 @@ where
     async fn handle_game_message(&mut self, envelope: Envelope) {
         tracing::debug!(route_id = envelope.route_id, "Received game message");
 
-        // When reliability is enabled, dedup/reorder via the game receiver.
-        if self.reliability.is_some() {
+        // When reliability is enabled, dedup/reorder via the pipe.
+        if self.pipe.is_reliable() {
             let now = self.now_mono();
-            let outcome = self
-                .reliability
-                .as_mut()
-                .unwrap()
-                .game
-                .receiver
-                .on_receive(envelope, now);
+            let outcome = self.pipe.process_incoming(envelope, now);
             match outcome {
                 ReceiveOutcome::Deliver(e) => self.forward_game_message(e).await,
                 ReceiveOutcome::DeliverMany(es) => {
@@ -691,11 +810,11 @@ where
         );
 
         // Both ends must agree on the reliability layer.
-        if hello_ok.reliability != self.reliability.is_some() {
+        if hello_ok.reliability != self.pipe.is_reliable() {
             return Err(ClientError::InvalidMessage(format!(
                 "reliability mismatch: server={}, client={}",
                 hello_ok.reliability,
-                self.reliability.is_some()
+                self.pipe.is_reliable()
             )));
         }
 
@@ -925,7 +1044,7 @@ where
         &mut self,
         message: T,
     ) -> Result<(), ClientError> {
-        let mode = if self.reliability.is_some() {
+        let mode = if self.pipe.is_reliable() {
             ReliabilityMode::ReliableOrdered
         } else {
             ReliabilityMode::Reliable
@@ -944,30 +1063,39 @@ where
         mode: ReliabilityMode,
         ttl: Duration,
     ) -> Result<(), ClientError> {
-        let now = self.now_mono();
-
-        // Reliable send window full ⇒ the server is too far behind on ACKs; the
-        // connection is backed up. Signal the app (terminal — not retry backpressure).
-        if mode.is_reliable() {
-            if let Some(rel) = self.reliability.as_ref() {
-                if rel.game.sender.is_full() {
-                    return Err(ClientError::SendWindowExceeded);
-                }
-            }
-        }
-
-        // Serialize message using game codec
+        // Serialize message using game codec, then hand off to the shared,
+        // non-generic send path (used by both the typed API and `ClientHandle`).
         let payload_bytes = self.game_codec.encode(&message).map_err(|e| {
             ClientError::CodecError(format!("Failed to serialize game message: {}", e))
         })?;
+        self.send_encoded(T::ROUTE_ID, T::SCHEMA_HASH, payload_bytes, mode, ttl)
+            .await
+    }
+
+    /// Sends an already-codec-encoded game payload: applies compression /
+    /// encryption / mode flags, lets the pipe assign the sequence number (and
+    /// track reliable messages), and forwards to the transport.
+    ///
+    /// This is the single outgoing-game send path. `ClientHandle` drives it via
+    /// the command channel so app sends go *through* the running `Client` (and
+    /// therefore engage reliability) instead of bypassing it on the raw channel.
+    async fn send_encoded(
+        &mut self,
+        route_id: u16,
+        schema_hash: u64,
+        payload: bytes::Bytes,
+        mode: ReliabilityMode,
+        ttl: Duration,
+    ) -> Result<(), ClientError> {
+        let now = self.now_mono();
 
         // Apply compression (zero-cost: NoCompressor inlines to no-op)
-        let payload_bytes = self.compressor.compress(&payload_bytes).map_err(|e| {
+        let payload = self.compressor.compress(&payload).map_err(|e| {
             ClientError::CompressionError(format!("Failed to compress payload: {}", e))
         })?;
 
         // Apply encryption (zero-cost: NoEncryptor inlines to no-op)
-        let payload_bytes = self.encryptor.encrypt(&payload_bytes).map_err(|e| {
+        let payload = self.encryptor.encrypt(&payload).map_err(|e| {
             ClientError::EncryptionError(format!("Failed to encrypt payload: {}", e))
         })?;
 
@@ -982,46 +1110,26 @@ where
             flags |= EnvelopeFlags::ENCRYPTED;
         }
 
-        // Assign the sequence number. Reliable messages use a contiguous space
-        // (so unreliable sends can't punch ordering gaps); UnreliableSequenced
-        // uses its own space; Unreliable carries no sequence.
-        let msg_id = if self.reliability.is_some() {
-            match mode {
-                ReliabilityMode::Reliable | ReliabilityMode::ReliableOrdered => {
-                    let id = self.reliable_game_seq;
-                    self.reliable_game_seq = self.reliable_game_seq.wrapping_add(1);
-                    id
-                }
-                ReliabilityMode::UnreliableSequenced => {
-                    let id = self.sequenced_game_seq;
-                    self.sequenced_game_seq = self.sequenced_game_seq.wrapping_add(1);
-                    id
-                }
-                ReliabilityMode::Unreliable => 0,
-            }
-        } else {
-            let id = self.msg_id_counter;
-            self.msg_id_counter = self.msg_id_counter.wrapping_add(1);
-            id
-        };
-
-        // Create envelope with automatic route_id and schema_hash from trait
-        let envelope = Envelope::new_simple(
+        // Build the envelope with a placeholder msg_id; the pipe assigns the
+        // sequence number (reliable → contiguous space; UnreliableSequenced → its
+        // own space; Unreliable → none) and tracks reliable messages.
+        let mut envelope = Envelope::new_simple(
             CURRENT_PROTOCOL_VERSION,
             self.game_codec.id(),
-            T::SCHEMA_HASH, // Automatic from GameMessage trait
-            T::ROUTE_ID,    // Automatic from GameMessage trait
-            msg_id,
+            schema_hash,
+            route_id,
+            0,     // placeholder; assigned by the pipe
             flags, // Include COMPRESSED and ENCRYPTED flags if applied
-            payload_bytes,
+            payload,
         );
 
-        // Track for retransmission (no-op for unreliable modes / disabled reliability).
-        if mode.is_reliable() {
-            if let Some(rel) = self.reliability.as_mut() {
-                rel.game.sender.on_send(&envelope, mode, ttl, now);
-            }
-        }
+        // A full reliable window means the server is a whole window behind on
+        // ACKs (connection backed up). Terminal — not retry backpressure. No
+        // sequence number is consumed.
+        self.pipe
+            .stamp_outgoing(&mut envelope, mode, ttl, now)
+            .map_err(|_| ClientError::SendWindowExceeded)?;
+        let msg_id = envelope.msg_id;
 
         self.outgoing_tx
             .send(envelope)
@@ -1029,8 +1137,8 @@ where
             .map_err(|_| ClientError::ChannelSendError)?;
 
         tracing::debug!(
-            route_id = T::ROUTE_ID,
-            schema_hash = format!("{:#018x}", T::SCHEMA_HASH),
+            route_id,
+            schema_hash = format!("{:#018x}", schema_hash),
             msg_id,
             mode = ?mode,
             compressed = flags.contains(EnvelopeFlags::COMPRESSED),
@@ -1084,45 +1192,34 @@ where
         message: &T,
     ) -> Result<(), ClientError> {
         let now = self.now_mono();
-
-        // Control send window full ⇒ connection backed up.
-        if let Some(rel) = self.reliability.as_ref() {
-            if rel.control.sender.is_full() {
-                return Err(ClientError::SendWindowExceeded);
-            }
-        }
+        let ttl = self.default_reliable_ttl();
 
         let payload_bytes = self
             .control_codec
             .encode(message)
             .map_err(|e| ClientError::InvalidMessage(format!("Failed to serialize: {}", e)))?;
 
-        let (msg_id, flags, track) = if self.reliability.is_some() {
-            let id = self.control_msg_id_counter;
-            self.control_msg_id_counter = self.control_msg_id_counter.wrapping_add(1);
-            (id, ReliabilityMode::ReliableOrdered.to_flags(), true)
+        // Reliable pipe → ReliableOrdered (sequenced, tracked + ACKed). Pass-through
+        // → bare RELIABLE with msg_id 0 (best-effort; the transport guarantees it).
+        let flags = if self.pipe.is_reliable() {
+            ReliabilityMode::ReliableOrdered.to_flags()
         } else {
-            (0, EnvelopeFlags::RELIABLE, false)
+            EnvelopeFlags::RELIABLE
         };
 
-        let envelope = Envelope::new_simple(
+        let mut envelope = Envelope::new_simple(
             CURRENT_PROTOCOL_VERSION,
             self.control_codec.id(),
             0,
             route_id,
-            msg_id,
+            0, // placeholder; assigned by the pipe (control space, or 0 for pass-through)
             flags,
             payload_bytes,
         );
 
-        if track {
-            let ttl = self.default_reliable_ttl();
-            if let Some(rel) = self.reliability.as_mut() {
-                rel.control
-                    .sender
-                    .on_send(&envelope, ReliabilityMode::ReliableOrdered, ttl, now);
-            }
-        }
+        self.pipe
+            .stamp_outgoing(&mut envelope, ReliabilityMode::ReliableOrdered, ttl, now)
+            .map_err(|_| ClientError::SendWindowExceeded)?;
 
         self.outgoing_tx
             .send(envelope)
@@ -1137,14 +1234,9 @@ where
     #[cfg(all(feature = "native", not(feature = "wasm")))]
     async fn handle_reliability_tick(&mut self) -> Result<(), ClientError> {
         let now = self.now_mono();
-        let (expired, retransmits, acks) = match self.reliability.as_mut() {
-            Some(rel) => (
-                rel.poll_expired(now),
-                rel.poll_retransmits(now),
-                rel.build_acks(now),
-            ),
-            None => return Ok(()),
-        };
+        // Pass-through pipes return an empty TickOutput (zero cost).
+        let out = self.pipe.tick(now);
+        let (expired, retransmits, acks) = (out.dropped, out.retransmits, out.acks);
 
         for env in retransmits {
             let _ = self.outgoing_tx.send(env).await;

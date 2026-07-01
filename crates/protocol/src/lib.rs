@@ -60,8 +60,8 @@ pub use messages::{
     Pong,
 };
 pub use reliability::{
-    ExpiredMessage, ReceiveOutcome, ReliabilityChannel, ReliabilityConfig, ReliabilityMode,
-    ReliabilityReceiver, ReliabilitySender, ReliabilityState, MonoMillisecond,
+    ExpiredMessage, MonoMillisecond, ReceiveOutcome, ReliabilityConfig, ReliabilityMode,
+    ReliablePipe, SessionPipe, TickOutput, WindowFull,
 };
 pub use state::ConnectionState;
 pub use transport::Transport;

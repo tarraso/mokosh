@@ -16,13 +16,12 @@ use bevy::prelude::*;
 use bytes::Bytes;
 use mokosh_client::transport::udp::UdpClient;
 use mokosh_client::transport::Transport;
-use mokosh_client::{Client, ClientConfig};
+use mokosh_client::{Client, ClientConfig, ClientHandle};
 use mokosh_examples_shared::platformer::{GameState, PlayerInput, GROUND_Y};
 use mokosh_protocol::compression::NoCompressor;
 use mokosh_protocol::encryption::NoEncryptor;
-use mokosh_protocol::{
-    CodecType, Envelope, EnvelopeFlags, GameMessage, ReliabilityConfig, CURRENT_PROTOCOL_VERSION,
-};
+use mokosh_protocol::reliability::ReliabilityMode;
+use mokosh_protocol::{CodecType, Envelope, GameMessage, ReliabilityConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -59,8 +58,8 @@ struct GroundLine;
 
 #[derive(Resource)]
 struct NetworkClient {
-    /// Channel to send outgoing envelopes (PlayerInput, etc.)
-    outgoing_tx: mpsc::Sender<Envelope>,
+    /// Handle for sending through the running client (engages reliability).
+    handle: ClientHandle,
     /// Channel to receive GameState updates (as envelopes)
     game_state_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Envelope>>>,
 }
@@ -84,7 +83,7 @@ fn main() {
     // The reliability layer needs the `Client` event loop running so it ACKs the
     // server's reliable HELLO_OK (otherwise the server drops us). We drive
     // `Client::run` and forward game messages via `game_messages_tx`.
-    let (outgoing_tx, game_state_rx) = rt.block_on(async {
+    let (handle, game_state_rx) = rt.block_on(async {
         println!("🔌 Connecting (UDP + reliability) to {SERVER_ADDR}...");
 
         let (from_transport_tx, from_transport_rx) = mpsc::channel(100);
@@ -103,8 +102,6 @@ fn main() {
             reliability: Some(ReliabilityConfig::default()),
             ..Default::default()
         };
-        // Keep a clone to push inputs directly (Client::run consumes the client).
-        let input_tx = to_transport_tx.clone();
         let mut client = Client::with_full_config(
             from_transport_rx,
             to_transport_tx,
@@ -117,11 +114,15 @@ fn main() {
             Some(game_tx),
         );
 
+        // Send inputs *through* the client (so reliability/sequencing engage)
+        // rather than cloning the raw transport channel. `Client::run` consumes
+        // the client, so grab the handle first.
+        let handle = client.handle();
         client.connect().await.expect("Failed to send HELLO");
         println!("📤 Sent HELLO; running client event loop");
         tokio::spawn(async move { client.run().await });
 
-        (input_tx, game_rx)
+        (handle, game_rx)
     });
 
     // `rt` stays in scope for the whole run, keeping the spawned tasks alive.
@@ -135,7 +136,7 @@ fn main() {
             ..default()
         }))
         .insert_resource(NetworkClient {
-            outgoing_tx,
+            handle,
             game_state_rx: Arc::new(tokio::sync::Mutex::new(game_state_rx)),
         })
         .insert_resource(GameEntities::default())
@@ -188,20 +189,17 @@ fn input_system(keyboard: Res<ButtonInput<KeyCode>>, net: Res<NetworkClient>) {
 
     let input = PlayerInput { move_x, jump };
 
-    // Inputs are sent unreliable (empty flags, msg_id 0) straight onto the
-    // transport's outgoing channel — the idiomatic choice for per-frame input
-    // (see doc/TODO.md #13).
+    // Inputs are sent unreliable (the idiomatic choice for per-frame input), but
+    // *through* the client via its handle so sequencing/codec are applied
+    // consistently instead of bypassing the event loop on the raw channel.
     if let Ok(payload_vec) = serde_json::to_vec(&input) {
-        let envelope = Envelope::new_simple(
-            CURRENT_PROTOCOL_VERSION,
-            1, // JSON
-            PlayerInput::SCHEMA_HASH,
+        let _ = net.handle.send_encoded(
             PlayerInput::ROUTE_ID, // 100
-            0,
-            EnvelopeFlags::empty(),
+            PlayerInput::SCHEMA_HASH,
             Bytes::from(payload_vec),
+            ReliabilityMode::Unreliable,
+            None,
         );
-        let _ = net.outgoing_tx.try_send(envelope);
     }
 }
 
