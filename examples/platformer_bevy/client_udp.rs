@@ -15,7 +15,7 @@
 use bevy::prelude::*;
 use bytes::Bytes;
 use mokosh_client::transport::udp::UdpClient;
-use mokosh_client::transport::Transport;
+use mokosh_client::transport::{ReliableLink, Transport};
 use mokosh_client::{Client, ClientConfig, ClientHandle};
 use mokosh_examples_shared::platformer::{GameState, PlayerInput, GROUND_Y};
 use mokosh_protocol::compression::NoCompressor;
@@ -90,9 +90,11 @@ fn main() {
         let (to_transport_tx, to_transport_rx) = mpsc::channel(100);
         let (game_tx, game_rx) = mpsc::channel(100);
 
-        // UDP transport.
+        // UDP transport, wrapped in the reliability decorator (the Client event
+        // loop is reliability-agnostic; the link adds ACK/retransmit/ordering).
         tokio::spawn(async move {
-            let transport = UdpClient::new(SERVER_ADDR.to_string());
+            let transport =
+                ReliableLink::new(UdpClient::new(SERVER_ADDR.to_string()), ReliabilityConfig::default());
             if let Err(e) = transport.run(from_transport_tx, to_transport_rx).await {
                 eprintln!("❌ Transport error: {}", e);
             }

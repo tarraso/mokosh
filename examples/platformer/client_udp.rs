@@ -12,7 +12,7 @@
 
 use bytes::Bytes;
 use mokosh_client::transport::udp::UdpClient;
-use mokosh_client::transport::Transport;
+use mokosh_client::transport::{ReliableLink, Transport};
 use mokosh_client::{Client, ClientConfig};
 use mokosh_examples_shared::platformer::{GameState, PlayerInput};
 use mokosh_protocol::compression::NoCompressor;
@@ -37,9 +37,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (from_transport_tx, from_transport_rx) = mpsc::channel::<Envelope>(100);
     let (game_tx, mut game_rx) = mpsc::channel::<Envelope>(100);
 
-    // Start the UDP transport.
+    // Start the UDP transport, wrapped in the reliability decorator (the Client
+    // event loop is reliability-agnostic; the link adds ACK/retransmit/ordering).
     tokio::spawn(async move {
-        let transport = UdpClient::new(SERVER_ADDR.to_string());
+        let transport =
+            ReliableLink::new(UdpClient::new(SERVER_ADDR.to_string()), ReliabilityConfig::default());
         if let Err(e) = transport.run(from_transport_tx, to_transport_rx).await {
             eprintln!("❌ Transport error: {}", e);
         }

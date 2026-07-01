@@ -814,6 +814,41 @@ impl ReliablePipe {
             acks: self.state.build_acks(now),
         }
     }
+
+    /// Full inbound routing for a non-ACK envelope, encapsulating the rules the
+    /// event loops used to inline:
+    /// - **best-effort control** (`route_id < 100` and **not** `SEQUENCED`, i.e.
+    ///   PING/PONG/DISCONNECT with a bare `RELIABLE` bit) bypasses the receiver
+    ///   entirely — delivered as-is, never deduped or ACKed;
+    /// - everything else (sequenced control HELLO/AUTH, and all game traffic)
+    ///   goes through the channel receiver for dedup / ordering / ACK scheduling.
+    ///
+    /// ACK envelopes (`routes::ACK`) must be handled by the caller via
+    /// [`on_ack`](Self::on_ack) *before* calling this — they are never delivered.
+    pub fn handle_incoming(&mut self, env: Envelope, now: MonoMillisecond) -> Inbound {
+        let is_control = Self::is_control(env.route_id);
+        let sequenced = env.flags.contains(EnvelopeFlags::SEQUENCED);
+        if is_control && !sequenced {
+            return Inbound::Deliver(vec![env]);
+        }
+        match self.process_incoming(env, now) {
+            ReceiveOutcome::Deliver(e) => Inbound::Deliver(vec![e]),
+            ReceiveOutcome::DeliverMany(es) => Inbound::Deliver(es),
+            ReceiveOutcome::Drop | ReceiveOutcome::DropDuplicate => Inbound::Consumed,
+            ReceiveOutcome::BufferOverflow => Inbound::Overflow,
+        }
+    }
+}
+
+/// Result of [`ReliablePipe::handle_incoming`].
+#[derive(Debug)]
+pub enum Inbound {
+    /// Hand these envelopes (in order) to the application/event loop.
+    Deliver(Vec<Envelope>),
+    /// Nothing to deliver (duplicate, buffered out-of-order, or sequenced-stale).
+    Consumed,
+    /// The ordering buffer overflowed; the caller should tear the connection down.
+    Overflow,
 }
 
 /// The link-layer pipe an event loop drives, uniform across transports.

@@ -39,6 +39,12 @@ pub mod routes {
     /// ACKs are themselves sent unreliably (no reliability flags, msg_id = 0)
     /// so they never trigger acknowledgement of acknowledgements.
     pub const ACK: u16 = 40;
+
+    /// MESSAGE_DROPPED (link layer → event loop, in-process only): a reliable
+    /// message was given up on (TTL / retry cap). Injected by the reliability
+    /// decorator into the incoming stream so the event loop can surface it
+    /// (`GameEvent::MessageDropped` / client `dropped_tx`). Never sent on the wire.
+    pub const MESSAGE_DROPPED: u16 = 41;
 }
 
 /// Reliability channel identifiers carried in an [`Ack`].
@@ -283,6 +289,16 @@ pub struct Ack {
     /// `cumulative_ack + 1 + i` was received (covers a 64-wide window above the
     /// cumulative point — see `reliability::ACK_WINDOW`).
     pub ack_bitmap: u64,
+}
+
+/// Payload of a [`routes::MESSAGE_DROPPED`] envelope: identifies a reliable
+/// message the link layer gave up on. In-process only (decorator → event loop).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageDropped {
+    /// Sequence number (envelope `msg_id`) of the dropped message.
+    pub seq: u64,
+    /// Route of the dropped message.
+    pub route_id: u16,
 }
 
 #[cfg(test)]

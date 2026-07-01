@@ -13,6 +13,8 @@ use mokosh_protocol::{
 use mokosh_protocol::compression::NoCompressor;
 use mokosh_protocol::encryption::NoEncryptor;
 use mokosh_protocol_derive::GameMessage;
+use mokosh_client::transport::memory::MemoryTransport;
+use mokosh_client::transport::{ReliableLink, Transport};
 use mokosh_client::{Client, ClientConfig};
 use mokosh_server::{GameEvent, Server, ServerConfig};
 use serde::{Deserialize, Serialize};
@@ -140,9 +142,20 @@ async fn server_to_client_reliable_ordered_survives_loss() {
         retransmit_tick: Duration::from_millis(10),
         ..Default::default()
     };
+    // Reliability lives in the transport decorator now: bridge the lossy wire
+    // (s2c_rx / c2s_tx) through a MemoryTransport wrapped in ReliableLink so the
+    // client gets dedup/ordering/ACK; the Client loop is reliability-agnostic.
+    let (cli_in_tx, cli_in_rx) = mpsc::channel::<Envelope>(256);
+    let (cli_out_tx, cli_out_rx) = mpsc::channel::<Envelope>(256);
+    let link = ReliableLink::new(MemoryTransport::new(c2s_tx, s2c_rx), fast_reliability())
+        .with_tick(Duration::from_millis(10));
+    tokio::spawn(async move {
+        let _ = link.run(cli_in_tx, cli_out_rx).await;
+    });
+
     let mut client = Client::with_full_config(
-        s2c_rx,
-        c2s_tx,
+        cli_in_rx,
+        cli_out_tx,
         json(),
         json(),
         client_cfg,

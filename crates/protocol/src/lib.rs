@@ -56,11 +56,11 @@ pub use envelope::{Envelope, EnvelopeFlags, ENVELOPE_HEADER_SIZE};
 pub use error::{EnvelopeError, ProtocolError, Result};
 pub use message_registry::{calculate_global_schema_hash, GameMessage, MessageRegistry};
 pub use messages::{
-    ack_channel, Ack, Disconnect, DisconnectReason, ErrorReason, Hello, HelloError, HelloOk, Ping,
-    Pong,
+    ack_channel, Ack, Disconnect, DisconnectReason, ErrorReason, Hello, HelloError, HelloOk,
+    MessageDropped, Ping, Pong,
 };
 pub use reliability::{
-    ExpiredMessage, MonoMillisecond, ReceiveOutcome, ReliabilityConfig, ReliabilityMode,
+    ExpiredMessage, Inbound, MonoMillisecond, ReceiveOutcome, ReliabilityConfig, ReliabilityMode,
     ReliablePipe, SessionPipe, TickOutput, WindowFull,
 };
 pub use state::ConnectionState;

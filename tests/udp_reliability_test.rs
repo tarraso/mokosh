@@ -8,7 +8,7 @@
 //! and ordered delivery all work end-to-end.
 
 use mokosh_client::transport::udp::UdpClient;
-use mokosh_client::transport::Transport;
+use mokosh_client::transport::{ReliableLink, Transport};
 use mokosh_client::{Client, ClientConfig};
 use mokosh_protocol::compression::NoCompressor;
 use mokosh_protocol::encryption::NoEncryptor;
@@ -119,7 +119,13 @@ async fn udp_reliable_ordered_end_to_end() {
     let (cli_out_tx, cli_out_rx) = mpsc::channel(256);
     let (game_tx, mut game_rx) = mpsc::channel(256);
 
-    let client_transport = UdpClient::new(server_addr.to_string());
+    // Reliability now lives in the transport decorator: wrap the unreliable
+    // UdpClient in ReliableLink (the Client event loop is reliability-agnostic).
+    let client_transport = ReliableLink::new(
+        UdpClient::new(server_addr.to_string()),
+        fast_reliability(),
+    )
+    .with_tick(Duration::from_millis(10));
     let client_transport_task = tokio::spawn(async move {
         let _ = client_transport.run(cli_in_tx, cli_out_rx).await;
     });
@@ -223,7 +229,13 @@ async fn udp_client_handle_reliable_to_server() {
     let (cli_out_tx, cli_out_rx) = mpsc::channel(256);
     let (game_tx, _game_rx) = mpsc::channel(256);
 
-    let client_transport = UdpClient::new(server_addr.to_string());
+    // Reliability now lives in the transport decorator: wrap the unreliable
+    // UdpClient in ReliableLink (the Client event loop is reliability-agnostic).
+    let client_transport = ReliableLink::new(
+        UdpClient::new(server_addr.to_string()),
+        fast_reliability(),
+    )
+    .with_tick(Duration::from_millis(10));
     let client_transport_task = tokio::spawn(async move {
         let _ = client_transport.run(cli_in_tx, cli_out_rx).await;
     });
