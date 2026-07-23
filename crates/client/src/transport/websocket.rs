@@ -1,9 +1,9 @@
 use super::Transport;
+use crate::compat::mpsc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use mokosh_protocol::Envelope;
-use crate::compat::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 /// WebSocket client that connects to a server and bridges envelope channels
@@ -190,13 +190,11 @@ mod tests {
 
         outgoing_tx.send(test_envelope.clone()).await.unwrap();
 
-        let received = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            incoming_rx.recv(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let received =
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), incoming_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received.route_id, test_envelope.route_id);
         assert_eq!(received.msg_id, test_envelope.msg_id);
@@ -243,13 +241,11 @@ mod tests {
         }
 
         for i in 1u64..=5 {
-            let received = tokio::time::timeout(
-                tokio::time::Duration::from_secs(1),
-                incoming_rx.recv(),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            let received =
+                tokio::time::timeout(tokio::time::Duration::from_secs(1), incoming_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
 
             assert_eq!(received.msg_id, i);
             assert_eq!(received.route_id, (100 + i) as u16);

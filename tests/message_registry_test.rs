@@ -3,9 +3,7 @@
 //! Tests type-safe message sending/receiving and schema validation.
 
 use mokosh_client::Client;
-use mokosh_protocol::{
-    calculate_global_schema_hash, GameMessage, MessageRegistry,
-};
+use mokosh_protocol::{calculate_global_schema_hash, GameMessage, MessageRegistry};
 use mokosh_protocol_derive::GameMessage;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -57,9 +55,20 @@ async fn test_type_safe_send_multiple_messages() {
     let mut client = Client::new(incoming_rx, outgoing_tx);
 
     // Act - send different message types
-    client.send_message(TestMessage1 { value: 1 }).await.unwrap();
-    client.send_message(TestMessage2 { text: "hello".to_string() }).await.unwrap();
-    client.send_message(TestMessage1 { value: 2 }).await.unwrap();
+    client
+        .send_message(TestMessage1 { value: 1 })
+        .await
+        .unwrap();
+    client
+        .send_message(TestMessage2 {
+            text: "hello".to_string(),
+        })
+        .await
+        .unwrap();
+    client
+        .send_message(TestMessage1 { value: 2 })
+        .await
+        .unwrap();
 
     // Assert - correct route_id and schema_hash for each
     let env1 = outgoing_rx.recv().await.unwrap();
@@ -93,18 +102,21 @@ fn test_message_registry() {
     assert!(registry.is_registered(101));
     assert!(!registry.is_registered(102));
 
-    assert_eq!(registry.get_schema_hash(100), Some(TestMessage1::SCHEMA_HASH));
-    assert_eq!(registry.get_schema_hash(101), Some(TestMessage2::SCHEMA_HASH));
+    assert_eq!(
+        registry.get_schema_hash(100),
+        Some(TestMessage1::SCHEMA_HASH)
+    );
+    assert_eq!(
+        registry.get_schema_hash(101),
+        Some(TestMessage2::SCHEMA_HASH)
+    );
     assert_eq!(registry.get_schema_hash(102), None);
 }
 
 #[test]
 fn test_global_schema_hash() {
     // Arrange
-    let hashes = vec![
-        TestMessage1::SCHEMA_HASH,
-        TestMessage2::SCHEMA_HASH,
-    ];
+    let hashes = vec![TestMessage1::SCHEMA_HASH, TestMessage2::SCHEMA_HASH];
 
     // Act
     let global = calculate_global_schema_hash(&hashes);
@@ -167,7 +179,10 @@ async fn test_msg_id_auto_increment() {
 
     // Act - send 3 messages
     for _ in 0..3 {
-        client.send_message(TestMessage1 { value: 1 }).await.unwrap();
+        client
+            .send_message(TestMessage1 { value: 1 })
+            .await
+            .unwrap();
     }
 
     // Assert - msg_id increments

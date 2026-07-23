@@ -105,8 +105,8 @@ impl ReliableServerLink {
         let (server_out_tx, server_out_rx) = mpsc::channel(LINK_BUFFER);
         let bridge = Bridge::new(
             SessionPeers::new(self.cfg.clone()),
-            server_in_tx,      // → app (Server)
-            transport_out_tx,  // → network (transport)
+            server_in_tx,     // → app (Server)
+            transport_out_tx, // → network (transport)
             &self.cfg,
             self.control_codec,
             self.retransmit_tick,
@@ -160,7 +160,10 @@ impl PeerSet for SessionPeers {
     }
     fn inbound_ready(&mut self, key: SessionId, env: &Envelope) -> bool {
         let cfg = &self.cfg;
-        let entry = self.sessions.entry(key).or_insert_with(|| PerSession::new(cfg));
+        let entry = self
+            .sessions
+            .entry(key)
+            .or_insert_with(|| PerSession::new(cfg));
         // Withhold game traffic (drop, no ACK) until the handshake lands; control
         // (route < 100) always passes.
         env.route_id < GAME_MESSAGES_START || entry.established
@@ -231,8 +234,14 @@ mod tests {
         let b = SessionId::new_v4();
 
         // Both sessions handshake; both HELLOs reach the server, tagged by session.
-        t_in_tx.send(SessionEnvelope::new(a, hello_env())).await.unwrap();
-        t_in_tx.send(SessionEnvelope::new(b, hello_env())).await.unwrap();
+        t_in_tx
+            .send(SessionEnvelope::new(a, hello_env()))
+            .await
+            .unwrap();
+        t_in_tx
+            .send(SessionEnvelope::new(b, hello_env()))
+            .await
+            .unwrap();
 
         let mut seen = std::collections::HashSet::new();
         for _ in 0..2 {
@@ -246,7 +255,10 @@ mod tests {
         assert_eq!(seen, std::collections::HashSet::from([a, b]));
 
         // Server sends a reliable game message to A only → stamped and routed to A.
-        server_out_tx.send(SessionEnvelope::new(a, game_env())).await.unwrap();
+        server_out_tx
+            .send(SessionEnvelope::new(a, game_env()))
+            .await
+            .unwrap();
         sleep(TDuration::from_millis(30)).await;
         let mut game_to_a = 0;
         while let Ok(se) = t_out_rx.try_recv() {
@@ -272,13 +284,21 @@ mod tests {
             .spawn(t_in_rx, t_out_tx);
 
         let sid = SessionId::new_v4();
-        t_in_tx.send(SessionEnvelope::new(sid, hello_env())).await.unwrap();
+        t_in_tx
+            .send(SessionEnvelope::new(sid, hello_env()))
+            .await
+            .unwrap();
         // Drain the delivered HELLO.
-        let _ = timeout(TDuration::from_secs(1), server_in_rx.recv()).await.unwrap();
+        let _ = timeout(TDuration::from_secs(1), server_in_rx.recv())
+            .await
+            .unwrap();
 
         // No ACKs ever arrive; the 3rd reliable send exceeds the window of 2.
         for _ in 0..3 {
-            server_out_tx.send(SessionEnvelope::new(sid, game_env())).await.unwrap();
+            server_out_tx
+                .send(SessionEnvelope::new(sid, game_env()))
+                .await
+                .unwrap();
         }
 
         // The decorator injects a DISCONNECT toward the server for teardown.
@@ -293,6 +313,9 @@ mod tests {
                 _ => break,
             }
         }
-        assert!(saw_disconnect, "window overflow should inject a DISCONNECT to the server");
+        assert!(
+            saw_disconnect,
+            "window overflow should inject a DISCONNECT to the server"
+        );
     }
 }

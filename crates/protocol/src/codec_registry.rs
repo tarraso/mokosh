@@ -147,9 +147,8 @@ impl CodecRegistry {
 
     /// Gets a codec by ID, returning an error if not found
     pub fn get_or_err(&self, codec_id: u8) -> Result<CodecType> {
-        self.get(codec_id).ok_or_else(|| {
-            ProtocolError::CodecError(format!("Unknown codec ID: {}", codec_id))
-        })
+        self.get(codec_id)
+            .ok_or_else(|| ProtocolError::CodecError(format!("Unknown codec ID: {}", codec_id)))
     }
 
     /// Returns a list of all registered codec IDs

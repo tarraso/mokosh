@@ -115,11 +115,7 @@ fn setup_system(mut commands: Commands) {
     // Spawn camera
     commands.spawn((
         Camera2d,
-        Transform::from_xyz(
-            WINDOW_WIDTH as f32 / 2.0,
-            WINDOW_HEIGHT as f32 / 2.0,
-            0.0,
-        ),
+        Transform::from_xyz(WINDOW_WIDTH as f32 / 2.0, WINDOW_HEIGHT as f32 / 2.0, 0.0),
     ));
 
     // Spawn ground line

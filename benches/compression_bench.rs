@@ -1,10 +1,10 @@
 //! Benchmark for compression algorithms (Zstd vs Lz4)
 
 #[cfg(feature = "compression")]
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 #[cfg(feature = "compression")]
-use mokosh_protocol::compression::{Compressor, ZstdCompressor, Lz4Compressor, NoCompressor};
+use mokosh_protocol::compression::{Compressor, Lz4Compressor, NoCompressor, ZstdCompressor};
 
 #[cfg(feature = "compression")]
 fn bench_zstd_compression(c: &mut Criterion) {

@@ -143,7 +143,11 @@ impl MessageRegistry {
 
     /// Returns the global schema hash for all registered messages
     pub fn global_schema_hash(&self) -> u64 {
-        let hashes: Vec<u64> = self.registered_routes.iter().map(|(_, hash)| *hash).collect();
+        let hashes: Vec<u64> = self
+            .registered_routes
+            .iter()
+            .map(|(_, hash)| *hash)
+            .collect();
         calculate_global_schema_hash(&hashes)
     }
 
@@ -232,14 +236,8 @@ mod tests {
 
     #[test]
     fn test_calculate_global_schema_hash_order_independent() {
-        let hashes1 = vec![
-            0x1234_5678_90AB_CDEF,
-            0xFEDC_BA98_7654_3210,
-        ];
-        let hashes2 = vec![
-            0xFEDC_BA98_7654_3210,
-            0x1234_5678_90AB_CDEF,
-        ];
+        let hashes1 = vec![0x1234_5678_90AB_CDEF, 0xFEDC_BA98_7654_3210];
+        let hashes2 = vec![0xFEDC_BA98_7654_3210, 0x1234_5678_90AB_CDEF];
 
         assert_eq!(
             calculate_global_schema_hash(&hashes1),

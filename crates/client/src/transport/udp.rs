@@ -15,9 +15,9 @@
 //!   practical limit); inbound datagrams are capped at 64 KiB.
 
 use super::Transport;
+use crate::compat::mpsc;
 use async_trait::async_trait;
 use bytes::Bytes;
-use crate::compat::mpsc;
 use mokosh_protocol::Envelope;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
@@ -204,11 +204,10 @@ mod tests {
 
         let mut seen = Vec::new();
         for _ in 0..5 {
-            let env =
-                tokio::time::timeout(tokio::time::Duration::from_secs(1), incoming_rx.recv())
-                    .await
-                    .unwrap()
-                    .unwrap();
+            let env = tokio::time::timeout(tokio::time::Duration::from_secs(1), incoming_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
             seen.push(env.msg_id);
         }
         seen.sort_unstable();

@@ -157,7 +157,13 @@ mod tests {
         let result = negotiate_version(0x0100, 0x0100, 0x0200, 0x0200);
         assert!(result.is_err());
 
-        if let Err(ProtocolError::VersionMismatch { client_min, client_max, server_min, server_max }) = result {
+        if let Err(ProtocolError::VersionMismatch {
+            client_min,
+            client_max,
+            server_min,
+            server_max,
+        }) = result
+        {
             assert_eq!(client_min, 0x0100);
             assert_eq!(client_max, 0x0100);
             assert_eq!(server_min, 0x0200);

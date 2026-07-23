@@ -36,10 +36,10 @@
 //! assert_eq!(received.payload, Bytes::from_static(b"Hello, Godot!"));
 //! ```
 
-mod compat;
 pub mod auth;
 pub mod codec;
 pub mod codec_registry;
+mod compat;
 pub mod compression;
 pub mod encryption;
 pub mod envelope;
@@ -58,6 +58,8 @@ pub mod version;
 pub use codec_registry::CodecType;
 pub use envelope::{Envelope, EnvelopeFlags, ENVELOPE_HEADER_SIZE};
 pub use error::{EnvelopeError, ProtocolError, Result};
+#[cfg(feature = "native")]
+pub use link::{Bridge, PeerSet};
 pub use message_registry::{calculate_global_schema_hash, GameMessage, MessageRegistry};
 pub use messages::{
     ack_channel, Ack, Disconnect, DisconnectReason, ErrorReason, Hello, HelloError, HelloOk,
@@ -67,8 +69,6 @@ pub use reliability::{
     ExpiredMessage, Inbound, MonoMillisecond, ReceiveOutcome, ReliabilityConfig, ReliabilityMode,
     ReliablePipe, SessionPipe, TickOutput, WindowFull,
 };
-#[cfg(feature = "native")]
-pub use link::{Bridge, PeerSet};
 pub use state::ConnectionState;
 pub use transport::Transport;
 pub use version::{negotiate_version, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION};

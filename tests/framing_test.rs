@@ -21,15 +21,7 @@ fn test_envelope_serialization_roundtrip() {
 
 #[test]
 fn test_envelope_header_size() {
-    let envelope = Envelope::new_simple(
-        1,
-        1,
-        0,
-        100,
-        1,
-        EnvelopeFlags::empty(),
-        Bytes::new(),
-    );
+    let envelope = Envelope::new_simple(1, 1, 0, 100, 1, EnvelopeFlags::empty(), Bytes::new());
 
     let bytes = envelope.to_bytes();
     assert_eq!(bytes.len(), ENVELOPE_HEADER_SIZE);
@@ -73,7 +65,8 @@ fn test_different_payload_sizes() {
         );
 
         let bytes = envelope.to_bytes();
-        let deserialized = Envelope::from_bytes(bytes).unwrap_or_else(|_| panic!("Failed at size {}", size));
+        let deserialized =
+            Envelope::from_bytes(bytes).unwrap_or_else(|_| panic!("Failed at size {}", size));
 
         assert_eq!(deserialized.payload.len(), size);
         assert_eq!(deserialized.payload_len, size as u32);
@@ -95,21 +88,16 @@ fn test_all_flag_combinations() {
     ];
 
     for flags in flag_combinations {
-        let envelope = Envelope::new_simple(
-            1,
-            1,
-            0,
-            100,
-            1,
-            flags,
-            Bytes::from_static(b"test"),
-        );
+        let envelope = Envelope::new_simple(1, 1, 0, 100, 1, flags, Bytes::from_static(b"test"));
 
         let bytes = envelope.to_bytes();
         let deserialized = Envelope::from_bytes(bytes).expect("Failed to deserialize");
 
         assert_eq!(deserialized.flags, flags);
-        assert_eq!(deserialized.is_reliable(), flags.contains(EnvelopeFlags::RELIABLE));
+        assert_eq!(
+            deserialized.is_reliable(),
+            flags.contains(EnvelopeFlags::RELIABLE)
+        );
         assert_eq!(
             deserialized.is_encrypted(),
             flags.contains(EnvelopeFlags::ENCRYPTED)
@@ -302,17 +290,12 @@ fn test_multiple_envelopes_in_sequence() {
     let mut cursor = Bytes::from(all_bytes);
 
     for i in 0..10 {
-        let envelope_bytes = cursor.split_to(
-            ENVELOPE_HEADER_SIZE + format!("message {}", i).len(),
-        );
+        let envelope_bytes = cursor.split_to(ENVELOPE_HEADER_SIZE + format!("message {}", i).len());
 
         let envelope = Envelope::from_bytes(envelope_bytes).expect("Failed to deserialize");
 
         assert_eq!(envelope.route_id, 100 + i);
         assert_eq!(envelope.msg_id, i as u64);
-        assert_eq!(
-            envelope.payload,
-            Bytes::from(format!("message {}", i))
-        );
+        assert_eq!(envelope.payload, Bytes::from(format!("message {}", i)));
     }
 }

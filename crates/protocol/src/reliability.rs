@@ -20,8 +20,8 @@
 //! Reuses the envelope `msg_id` as the sequence number. TTL is **never**
 //! serialized; it lives in the local outstanding table.
 
-use crate::messages::{ack_channel, Ack};
 use crate::messages::GAME_MESSAGES_START;
+use crate::messages::{ack_channel, Ack};
 use crate::{Envelope, EnvelopeFlags};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -108,7 +108,10 @@ impl ReliabilityMode {
     /// Whether this mode requires acknowledgement + retransmission.
     #[inline]
     pub fn is_reliable(self) -> bool {
-        matches!(self, ReliabilityMode::Reliable | ReliabilityMode::ReliableOrdered)
+        matches!(
+            self,
+            ReliabilityMode::Reliable | ReliabilityMode::ReliableOrdered
+        )
     }
 
     /// Whether this mode requires strict in-order delivery.
@@ -255,7 +258,13 @@ impl ReliabilitySender {
     /// dropping an ordered message would leave a gap the receiver waits on
     /// forever, so ordered messages retransmit until ACKed (the connection-level
     /// keepalive timeout reaps a truly dead peer).
-    pub fn on_send(&mut self, envelope: &Envelope, mode: ReliabilityMode, ttl: Duration, now: MonoMillisecond) {
+    pub fn on_send(
+        &mut self,
+        envelope: &Envelope,
+        mode: ReliabilityMode,
+        ttl: Duration,
+        now: MonoMillisecond,
+    ) {
         if !mode.is_reliable() {
             return;
         }
@@ -970,7 +979,15 @@ mod tests {
     use bytes::Bytes;
 
     fn env(seq: u64, route_id: u16, mode: ReliabilityMode) -> Envelope {
-        Envelope::new_simple(1, 1, 0, route_id, seq, mode.to_flags(), Bytes::from_static(b"x"))
+        Envelope::new_simple(
+            1,
+            1,
+            0,
+            route_id,
+            seq,
+            mode.to_flags(),
+            Bytes::from_static(b"x"),
+        )
     }
 
     fn cfg() -> ReliabilityConfig {
@@ -1018,14 +1035,24 @@ mod tests {
     #[test]
     fn no_retransmit_before_rto() {
         let mut s = ReliabilitySender::new(cfg());
-        s.on_send(&env(1, 100, ReliabilityMode::Reliable), ReliabilityMode::Reliable, Duration::from_secs(10), t(0));
+        s.on_send(
+            &env(1, 100, ReliabilityMode::Reliable),
+            ReliabilityMode::Reliable,
+            Duration::from_secs(10),
+            t(0),
+        );
         assert!(s.poll_retransmits(t(50)).is_empty()); // initial_rto = 100ms
     }
 
     #[test]
     fn retransmit_at_rto_with_backoff() {
         let mut s = ReliabilitySender::new(cfg());
-        s.on_send(&env(1, 100, ReliabilityMode::Reliable), ReliabilityMode::Reliable, Duration::from_secs(10), t(0));
+        s.on_send(
+            &env(1, 100, ReliabilityMode::Reliable),
+            ReliabilityMode::Reliable,
+            Duration::from_secs(10),
+            t(0),
+        );
         // First retransmit at ~100ms.
         assert_eq!(s.poll_retransmits(t(100)).len(), 1);
         // Backoff to ~200ms: nothing at 250 relative? next at 100+200=300.
@@ -1036,7 +1063,12 @@ mod tests {
     #[test]
     fn unreliable_is_not_tracked() {
         let mut s = ReliabilitySender::new(cfg());
-        s.on_send(&env(1, 100, ReliabilityMode::Unreliable), ReliabilityMode::Unreliable, Duration::from_secs(10), t(0));
+        s.on_send(
+            &env(1, 100, ReliabilityMode::Unreliable),
+            ReliabilityMode::Unreliable,
+            Duration::from_secs(10),
+            t(0),
+        );
         assert_eq!(s.outstanding_len(), 0);
     }
 
@@ -1044,9 +1076,21 @@ mod tests {
     fn ack_clears_outstanding() {
         let mut s = ReliabilitySender::new(cfg());
         for seq in 1..=3 {
-            s.on_send(&env(seq, 100, ReliabilityMode::Reliable), ReliabilityMode::Reliable, Duration::from_secs(10), t(0));
+            s.on_send(
+                &env(seq, 100, ReliabilityMode::Reliable),
+                ReliabilityMode::Reliable,
+                Duration::from_secs(10),
+                t(0),
+            );
         }
-        let acked = s.on_ack(&Ack { channel: 1, cumulative_ack: 2, ack_bitmap: 0 }, t(10));
+        let acked = s.on_ack(
+            &Ack {
+                channel: 1,
+                cumulative_ack: 2,
+                ack_bitmap: 0,
+            },
+            t(10),
+        );
         assert_eq!(acked.len(), 2);
         assert_eq!(s.outstanding_len(), 1); // seq 3 remains
     }
@@ -1055,10 +1099,22 @@ mod tests {
     fn ack_bitmap_clears_selective() {
         let mut s = ReliabilitySender::new(cfg());
         for seq in 1..=4 {
-            s.on_send(&env(seq, 100, ReliabilityMode::Reliable), ReliabilityMode::Reliable, Duration::from_secs(10), t(0));
+            s.on_send(
+                &env(seq, 100, ReliabilityMode::Reliable),
+                ReliabilityMode::Reliable,
+                Duration::from_secs(10),
+                t(0),
+            );
         }
         // cumulative 1, bitmap clears 3 (bit index 1 => cum+1+1 = 3) and 4 (bit 2).
-        let acked = s.on_ack(&Ack { channel: 1, cumulative_ack: 1, ack_bitmap: 0b110 }, t(10));
+        let acked = s.on_ack(
+            &Ack {
+                channel: 1,
+                cumulative_ack: 1,
+                ack_bitmap: 0b110,
+            },
+            t(10),
+        );
         assert_eq!(acked.len(), 3); // 1, 3, 4
         assert_eq!(s.outstanding_len(), 1); // only seq 2 remains
     }
@@ -1066,7 +1122,12 @@ mod tests {
     #[test]
     fn ttl_expiry_reports_once() {
         let mut s = ReliabilitySender::new(cfg());
-        s.on_send(&env(1, 100, ReliabilityMode::Reliable), ReliabilityMode::Reliable, Duration::from_millis(500), t(0));
+        s.on_send(
+            &env(1, 100, ReliabilityMode::Reliable),
+            ReliabilityMode::Reliable,
+            Duration::from_millis(500),
+            t(0),
+        );
         assert!(s.poll_expired(t(400)).is_empty());
         let expired = s.poll_expired(t(600));
         assert_eq!(expired.len(), 1);
@@ -1097,14 +1158,27 @@ mod tests {
         let mut sends = 0;
         for _ in 0..20 {
             now += 60;
-            assert!(s.poll_expired(t(now)).is_empty(), "ordered must never expire");
+            assert!(
+                s.poll_expired(t(now)).is_empty(),
+                "ordered must never expire"
+            );
             sends += s.poll_retransmits(t(now)).len();
         }
         // ...and it keeps being retransmitted (well beyond max_retries=2).
-        assert!(sends > 2, "ordered should retransmit past the retry cap (got {sends})");
+        assert!(
+            sends > 2,
+            "ordered should retransmit past the retry cap (got {sends})"
+        );
         assert_eq!(s.outstanding_len(), 1);
         // Only an ACK clears it.
-        s.on_ack(&Ack { channel: 1, cumulative_ack: 1, ack_bitmap: 0 }, t(now));
+        s.on_ack(
+            &Ack {
+                channel: 1,
+                cumulative_ack: 1,
+                ack_bitmap: 0,
+            },
+            t(now),
+        );
         assert_eq!(s.outstanding_len(), 0);
     }
 
@@ -1127,7 +1201,14 @@ mod tests {
         assert!(s.is_full());
         assert_eq!(s.outstanding_len(), 3);
         // An ACK frees room.
-        s.on_ack(&Ack { channel: 1, cumulative_ack: 2, ack_bitmap: 0 }, t(1));
+        s.on_ack(
+            &Ack {
+                channel: 1,
+                cumulative_ack: 2,
+                ack_bitmap: 0,
+            },
+            t(1),
+        );
         assert!(!s.is_full());
         assert_eq!(s.outstanding_len(), 1);
     }
@@ -1154,7 +1235,7 @@ mod tests {
         let ack = r.build_ack(t(100)).unwrap();
         assert_eq!(ack.cumulative_ack, 0);
         assert_eq!(ack.ack_bitmap & (1u64 << 35), 1u64 << 35); // seq 37 recorded
-        // Gap fills: cumulative jumps past the whole contiguous run.
+                                                               // Gap fills: cumulative jumps past the whole contiguous run.
         let _ = r.on_receive(env(1, 100, ReliabilityMode::Reliable), t(0));
         let ack = r.build_ack(t(200)).unwrap();
         assert_eq!(ack.cumulative_ack, 40);
@@ -1193,7 +1274,12 @@ mod tests {
         c.min_rto = Duration::from_millis(50);
         c.initial_rto = Duration::from_millis(50);
         let mut s = ReliabilitySender::new(c);
-        s.on_send(&env(1, 100, ReliabilityMode::Reliable), ReliabilityMode::Reliable, Duration::from_secs(60), t(0));
+        s.on_send(
+            &env(1, 100, ReliabilityMode::Reliable),
+            ReliabilityMode::Reliable,
+            Duration::from_secs(60),
+            t(0),
+        );
         let mut sends = 0;
         let mut now = 0u64;
         for _ in 0..20 {
@@ -1295,8 +1381,14 @@ mod tests {
         c.ordering_buffer_limit = 2;
         let mut r = ReliabilityReceiver::new(c, ack_channel::GAME);
         // Hold back seq 1; flood with future seqs.
-        assert!(matches!(r.on_receive(env(3, 100, ReliabilityMode::ReliableOrdered), t(0)), ReceiveOutcome::Drop));
-        assert!(matches!(r.on_receive(env(4, 100, ReliabilityMode::ReliableOrdered), t(0)), ReceiveOutcome::Drop));
+        assert!(matches!(
+            r.on_receive(env(3, 100, ReliabilityMode::ReliableOrdered), t(0)),
+            ReceiveOutcome::Drop
+        ));
+        assert!(matches!(
+            r.on_receive(env(4, 100, ReliabilityMode::ReliableOrdered), t(0)),
+            ReceiveOutcome::Drop
+        ));
         assert!(matches!(
             r.on_receive(env(5, 100, ReliabilityMode::ReliableOrdered), t(0)),
             ReceiveOutcome::BufferOverflow
@@ -1313,7 +1405,12 @@ mod tests {
             .map(|seq| env(seq, 100, ReliabilityMode::ReliableOrdered))
             .collect();
         for e in &envs {
-            s.on_send(e, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0));
+            s.on_send(
+                e,
+                ReliabilityMode::ReliableOrdered,
+                Duration::from_secs(10),
+                t(0),
+            );
         }
         // Deliver 1 and 3 (2 lost).
         let _ = r.on_receive(envs[0].clone(), t(0));
@@ -1354,7 +1451,15 @@ mod tests {
     // ---- SessionPipe ----
 
     fn blank_env(route_id: u16, mode: ReliabilityMode) -> Envelope {
-        Envelope::new_simple(1, 1, 0, route_id, 0, mode.to_flags(), Bytes::from_static(b"x"))
+        Envelope::new_simple(
+            1,
+            1,
+            0,
+            route_id,
+            0,
+            mode.to_flags(),
+            Bytes::from_static(b"x"),
+        )
     }
 
     #[test]
@@ -1363,13 +1468,31 @@ mod tests {
         assert!(!p.is_reliable());
         let mut g1 = blank_env(100, ReliabilityMode::Reliable);
         let mut g2 = blank_env(100, ReliabilityMode::Reliable);
-        p.stamp_outgoing(&mut g1, ReliabilityMode::Reliable, Duration::from_secs(10), t(0)).unwrap();
-        p.stamp_outgoing(&mut g2, ReliabilityMode::Reliable, Duration::from_secs(10), t(0)).unwrap();
+        p.stamp_outgoing(
+            &mut g1,
+            ReliabilityMode::Reliable,
+            Duration::from_secs(10),
+            t(0),
+        )
+        .unwrap();
+        p.stamp_outgoing(
+            &mut g2,
+            ReliabilityMode::Reliable,
+            Duration::from_secs(10),
+            t(0),
+        )
+        .unwrap();
         assert_eq!(g1.msg_id, 1);
         assert_eq!(g2.msg_id, 2);
         // Control carries no sequence in pass-through.
         let mut c = blank_env(5, ReliabilityMode::ReliableOrdered);
-        p.stamp_outgoing(&mut c, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0)).unwrap();
+        p.stamp_outgoing(
+            &mut c,
+            ReliabilityMode::ReliableOrdered,
+            Duration::from_secs(10),
+            t(0),
+        )
+        .unwrap();
         assert_eq!(c.msg_id, 0);
         // Pass-through never tracks: tick is empty.
         let out = p.tick(t(100));
@@ -1383,20 +1506,50 @@ mod tests {
         // Reliable game messages get a contiguous space starting at 1.
         let mut g1 = blank_env(100, ReliabilityMode::ReliableOrdered);
         let mut g2 = blank_env(100, ReliabilityMode::ReliableOrdered);
-        p.stamp_outgoing(&mut g1, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0)).unwrap();
-        p.stamp_outgoing(&mut g2, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0)).unwrap();
+        p.stamp_outgoing(
+            &mut g1,
+            ReliabilityMode::ReliableOrdered,
+            Duration::from_secs(10),
+            t(0),
+        )
+        .unwrap();
+        p.stamp_outgoing(
+            &mut g2,
+            ReliabilityMode::ReliableOrdered,
+            Duration::from_secs(10),
+            t(0),
+        )
+        .unwrap();
         assert_eq!((g1.msg_id, g2.msg_id), (1, 2));
         // UnreliableSequenced has its own space (also starts at 1).
         let mut s = blank_env(100, ReliabilityMode::UnreliableSequenced);
-        p.stamp_outgoing(&mut s, ReliabilityMode::UnreliableSequenced, Duration::from_secs(10), t(0)).unwrap();
+        p.stamp_outgoing(
+            &mut s,
+            ReliabilityMode::UnreliableSequenced,
+            Duration::from_secs(10),
+            t(0),
+        )
+        .unwrap();
         assert_eq!(s.msg_id, 1);
         // Unreliable carries no sequence.
         let mut u = blank_env(100, ReliabilityMode::Unreliable);
-        p.stamp_outgoing(&mut u, ReliabilityMode::Unreliable, Duration::from_secs(10), t(0)).unwrap();
+        p.stamp_outgoing(
+            &mut u,
+            ReliabilityMode::Unreliable,
+            Duration::from_secs(10),
+            t(0),
+        )
+        .unwrap();
         assert_eq!(u.msg_id, 0);
         // Control reliable uses an independent contiguous space.
         let mut c = blank_env(5, ReliabilityMode::ReliableOrdered);
-        p.stamp_outgoing(&mut c, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0)).unwrap();
+        p.stamp_outgoing(
+            &mut c,
+            ReliabilityMode::ReliableOrdered,
+            Duration::from_secs(10),
+            t(0),
+        )
+        .unwrap();
         assert_eq!(c.msg_id, 1);
         // All three tracked reliable messages (2 game + 1 control) retransmit
         // after the RTO; the unreliable/sequenced ones are not tracked.
@@ -1410,13 +1563,23 @@ mod tests {
         // A bare-RELIABLE control message (e.g. DISCONNECT/PING) is best-effort:
         // msg_id 0, not tracked (no retransmit).
         let mut d = blank_env(routes::DISCONNECT, ReliabilityMode::Reliable);
-        p.stamp_outgoing(&mut d, ReliabilityMode::Reliable, Duration::from_secs(10), t(0))
-            .unwrap();
+        p.stamp_outgoing(
+            &mut d,
+            ReliabilityMode::Reliable,
+            Duration::from_secs(10),
+            t(0),
+        )
+        .unwrap();
         assert_eq!(d.msg_id, 0, "best-effort control carries no sequence");
         // Ordered control (HELLO) IS tracked (control seq 1).
         let mut h = blank_env(routes::HELLO, ReliabilityMode::ReliableOrdered);
-        p.stamp_outgoing(&mut h, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0))
-            .unwrap();
+        p.stamp_outgoing(
+            &mut h,
+            ReliabilityMode::ReliableOrdered,
+            Duration::from_secs(10),
+            t(0),
+        )
+        .unwrap();
         assert_eq!(h.msg_id, 1);
         // Only the HELLO is retransmitted.
         let out = p.tick(t(200));
@@ -1431,11 +1594,22 @@ mod tests {
         let mut p = SessionPipe::reliable(c);
         for _ in 0..2 {
             let mut e = blank_env(100, ReliabilityMode::ReliableOrdered);
-            p.stamp_outgoing(&mut e, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0)).unwrap();
+            p.stamp_outgoing(
+                &mut e,
+                ReliabilityMode::ReliableOrdered,
+                Duration::from_secs(10),
+                t(0),
+            )
+            .unwrap();
         }
         let mut e = blank_env(100, ReliabilityMode::ReliableOrdered);
         assert_eq!(
-            p.stamp_outgoing(&mut e, ReliabilityMode::ReliableOrdered, Duration::from_secs(10), t(0)),
+            p.stamp_outgoing(
+                &mut e,
+                ReliabilityMode::ReliableOrdered,
+                Duration::from_secs(10),
+                t(0)
+            ),
             Err(WindowFull)
         );
         // No sequence was consumed (msg_id untouched).
@@ -1447,7 +1621,10 @@ mod tests {
         let mut p = SessionPipe::reliable(cfg());
         // Receive an inbound ordered game message → deliver + schedule ACK.
         let inbound = env(1, 100, ReliabilityMode::ReliableOrdered);
-        assert!(matches!(p.process_incoming(inbound, t(0)), ReceiveOutcome::Deliver(_)));
+        assert!(matches!(
+            p.process_incoming(inbound, t(0)),
+            ReceiveOutcome::Deliver(_)
+        ));
         let out = p.tick(t(50));
         assert_eq!(out.acks.len(), 1);
         assert_eq!(out.acks[0].cumulative_ack, 1);

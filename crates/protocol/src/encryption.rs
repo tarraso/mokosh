@@ -26,7 +26,7 @@
 //! assert_eq!(plaintext.as_slice(), decrypted.as_ref());
 //! ```
 
-use bytes::{Bytes, BytesMut, BufMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
@@ -315,8 +315,14 @@ mod tests {
         assert_ne!(&ciphertext1[0..12], &ciphertext2[0..12]);
 
         // Both should decrypt correctly
-        assert_eq!(plaintext.as_slice(), encryptor.decrypt(&ciphertext1).unwrap().as_ref());
-        assert_eq!(plaintext.as_slice(), encryptor.decrypt(&ciphertext2).unwrap().as_ref());
+        assert_eq!(
+            plaintext.as_slice(),
+            encryptor.decrypt(&ciphertext1).unwrap().as_ref()
+        );
+        assert_eq!(
+            plaintext.as_slice(),
+            encryptor.decrypt(&ciphertext2).unwrap().as_ref()
+        );
     }
 
     #[test]
@@ -327,7 +333,10 @@ mod tests {
         let short_ciphertext = b"short";
         let result = encryptor.decrypt(short_ciphertext);
 
-        assert!(matches!(result, Err(EncryptionError::CiphertextTooShort { .. })));
+        assert!(matches!(
+            result,
+            Err(EncryptionError::CiphertextTooShort { .. })
+        ));
     }
 
     #[test]
@@ -335,7 +344,10 @@ mod tests {
         let key = [0x66; 32];
         let encryptor = ChaCha20Poly1305Encryptor::new(&key);
 
-        assert_eq!(encryptor.encryption_type(), EncryptionType::ChaCha20Poly1305);
+        assert_eq!(
+            encryptor.encryption_type(),
+            EncryptionType::ChaCha20Poly1305
+        );
     }
 
     #[test]

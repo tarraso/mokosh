@@ -1,17 +1,17 @@
 //! Benchmark for Envelope encode/decode operations
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
 use bytes::Bytes;
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use mokosh_protocol::envelope::{Envelope, EnvelopeFlags};
 
 fn bench_envelope_encode(c: &mut Criterion) {
     let envelope = Envelope::new(
-        1,     // protocol_version
-        1,     // codec_id
-        0,     // schema_hash
-        100,   // route_id
-        42,    // msg_id
-        0,     // correlation_id
+        1,   // protocol_version
+        1,   // codec_id
+        0,   // schema_hash
+        100, // route_id
+        42,  // msg_id
+        0,   // correlation_id
         EnvelopeFlags::RELIABLE,
         Bytes::from_static(b"Hello, Godot! This is a test payload."),
     );
@@ -23,12 +23,12 @@ fn bench_envelope_encode(c: &mut Criterion) {
 
 fn bench_envelope_decode(c: &mut Criterion) {
     let envelope = Envelope::new(
-        1,     // protocol_version
-        1,     // codec_id
-        0,     // schema_hash
-        100,   // route_id
-        42,    // msg_id
-        0,     // correlation_id
+        1,   // protocol_version
+        1,   // codec_id
+        0,   // schema_hash
+        100, // route_id
+        42,  // msg_id
+        0,   // correlation_id
         EnvelopeFlags::RELIABLE,
         Bytes::from_static(b"Hello, Godot! This is a test payload."),
     );
@@ -45,12 +45,12 @@ fn bench_envelope_decode(c: &mut Criterion) {
 
 fn bench_envelope_roundtrip(c: &mut Criterion) {
     let envelope = Envelope::new(
-        1,     // protocol_version
-        1,     // codec_id
-        0,     // schema_hash
-        100,   // route_id
-        42,    // msg_id
-        0,     // correlation_id
+        1,   // protocol_version
+        1,   // codec_id
+        0,   // schema_hash
+        100, // route_id
+        42,  // msg_id
+        0,   // correlation_id
         EnvelopeFlags::RELIABLE,
         Bytes::from_static(b"Hello, Godot! This is a test payload."),
     );
@@ -72,12 +72,12 @@ fn bench_envelope_size_scaling(c: &mut Criterion) {
 
         let payload = vec![0xAB; *size];
         let envelope = Envelope::new(
-            1,     // protocol_version
-            1,     // codec_id
-            0,     // schema_hash
-            100,   // route_id
-            42,    // msg_id
-            0,     // correlation_id
+            1,   // protocol_version
+            1,   // codec_id
+            0,   // schema_hash
+            100, // route_id
+            42,  // msg_id
+            0,   // correlation_id
             EnvelopeFlags::RELIABLE,
             Bytes::from(payload),
         );

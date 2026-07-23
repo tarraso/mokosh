@@ -104,7 +104,10 @@ async fn udp_reliable_ordered_end_to_end() {
                             server
                                 .send_message_with(
                                     s,
-                                    TestMsg { seq: i, value: i as f32 },
+                                    TestMsg {
+                                        seq: i,
+                                        value: i as f32,
+                                    },
                                     ReliabilityMode::ReliableOrdered,
                                     Duration::from_secs(30),
                                 )
@@ -127,11 +130,9 @@ async fn udp_reliable_ordered_end_to_end() {
 
     // Reliability now lives in the transport decorator: wrap the unreliable
     // UdpClient in ReliableLink (the Client event loop is reliability-agnostic).
-    let client_transport = ReliableLink::new(
-        UdpClient::new(server_addr.to_string()),
-        fast_reliability(),
-    )
-    .with_tick(Duration::from_millis(10));
+    let client_transport =
+        ReliableLink::new(UdpClient::new(server_addr.to_string()), fast_reliability())
+            .with_tick(Duration::from_millis(10));
     let client_transport_task = tokio::spawn(async move {
         let _ = client_transport.run(cli_in_tx, cli_out_rx).await;
     });
@@ -215,7 +216,15 @@ async fn udp_client_handle_reliable_to_server() {
         ..Default::default()
     };
     let mut server = Server::with_full_config(
-        srv_in_rx, srv_out_tx, json(), json(), server_cfg, None, None, NoCompressor, NoEncryptor,
+        srv_in_rx,
+        srv_out_tx,
+        json(),
+        json(),
+        server_cfg,
+        None,
+        None,
+        NoCompressor,
+        NoEncryptor,
     );
 
     // Server forwards received game messages (route 300) to the test.
@@ -242,11 +251,9 @@ async fn udp_client_handle_reliable_to_server() {
 
     // Reliability now lives in the transport decorator: wrap the unreliable
     // UdpClient in ReliableLink (the Client event loop is reliability-agnostic).
-    let client_transport = ReliableLink::new(
-        UdpClient::new(server_addr.to_string()),
-        fast_reliability(),
-    )
-    .with_tick(Duration::from_millis(10));
+    let client_transport =
+        ReliableLink::new(UdpClient::new(server_addr.to_string()), fast_reliability())
+            .with_tick(Duration::from_millis(10));
     let client_transport_task = tokio::spawn(async move {
         let _ = client_transport.run(cli_in_tx, cli_out_rx).await;
     });
@@ -257,7 +264,14 @@ async fn udp_client_handle_reliable_to_server() {
         ..Default::default()
     };
     let mut client = Client::with_full_config(
-        cli_in_rx, cli_out_tx, json(), json(), client_cfg, None, NoCompressor, NoEncryptor,
+        cli_in_rx,
+        cli_out_tx,
+        json(),
+        json(),
+        client_cfg,
+        None,
+        NoCompressor,
+        NoEncryptor,
         Some(game_tx),
     );
     // Grab the handle BEFORE run() consumes the client.
@@ -271,7 +285,10 @@ async fn udp_client_handle_reliable_to_server() {
         handle
             .send_message(
                 json(),
-                &TestMsg { seq: i, value: i as f32 },
+                &TestMsg {
+                    seq: i,
+                    value: i as f32,
+                },
                 ReliabilityMode::ReliableOrdered,
                 None,
             )

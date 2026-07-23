@@ -191,7 +191,11 @@ mod tests {
         )
     }
 
-    async fn spawn_server() -> (SocketAddr, mpsc::Receiver<SessionEnvelope>, mpsc::Sender<SessionEnvelope>) {
+    async fn spawn_server() -> (
+        SocketAddr,
+        mpsc::Receiver<SessionEnvelope>,
+        mpsc::Sender<SessionEnvelope>,
+    ) {
         let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let (incoming_tx, incoming_rx) = mpsc::channel(16);
         let (outgoing_tx, outgoing_rx) = mpsc::channel(16);
@@ -230,7 +234,10 @@ mod tests {
 
         assert!(!session_envelope.session_id.is_nil());
         assert_eq!(session_envelope.envelope.route_id, 100);
-        assert_eq!(session_envelope.envelope.payload, Bytes::from_static(b"hello"));
+        assert_eq!(
+            session_envelope.envelope.payload,
+            Bytes::from_static(b"hello")
+        );
     }
 
     #[tokio::test]
@@ -240,8 +247,14 @@ mod tests {
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         client.connect(server_addr).await.unwrap();
 
-        client.send(&test_envelope(100, 1, b"a").to_bytes()).await.unwrap();
-        client.send(&test_envelope(100, 2, b"b").to_bytes()).await.unwrap();
+        client
+            .send(&test_envelope(100, 1, b"a").to_bytes())
+            .await
+            .unwrap();
+        client
+            .send(&test_envelope(100, 2, b"b").to_bytes())
+            .await
+            .unwrap();
 
         let first = incoming_rx.recv().await.unwrap();
         let second = incoming_rx.recv().await.unwrap();
@@ -257,8 +270,14 @@ mod tests {
         let client2 = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         client2.connect(server_addr).await.unwrap();
 
-        client1.send(&test_envelope(100, 1, b"c1").to_bytes()).await.unwrap();
-        client2.send(&test_envelope(100, 1, b"c2").to_bytes()).await.unwrap();
+        client1
+            .send(&test_envelope(100, 1, b"c1").to_bytes())
+            .await
+            .unwrap();
+        client2
+            .send(&test_envelope(100, 1, b"c2").to_bytes())
+            .await
+            .unwrap();
 
         let a = incoming_rx.recv().await.unwrap();
         let b = incoming_rx.recv().await.unwrap();
@@ -272,7 +291,10 @@ mod tests {
         let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         client.connect(server_addr).await.unwrap();
 
-        client.send(&test_envelope(100, 1, b"ping").to_bytes()).await.unwrap();
+        client
+            .send(&test_envelope(100, 1, b"ping").to_bytes())
+            .await
+            .unwrap();
         let session_id = incoming_rx.recv().await.unwrap().session_id;
 
         let response = test_envelope(200, 2, b"pong");
@@ -301,7 +323,10 @@ mod tests {
         // Too short to be an envelope header.
         client.send(&[1, 2, 3]).await.unwrap();
         // Followed by a valid one.
-        client.send(&test_envelope(100, 1, b"ok").to_bytes()).await.unwrap();
+        client
+            .send(&test_envelope(100, 1, b"ok").to_bytes())
+            .await
+            .unwrap();
 
         let session_envelope =
             tokio::time::timeout(tokio::time::Duration::from_secs(1), incoming_rx.recv())

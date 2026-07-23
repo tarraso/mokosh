@@ -93,8 +93,10 @@ fn main() {
         // UDP transport, wrapped in the reliability decorator (the Client event
         // loop is reliability-agnostic; the link adds ACK/retransmit/ordering).
         tokio::spawn(async move {
-            let transport =
-                ReliableLink::new(UdpClient::new(SERVER_ADDR.to_string()), ReliabilityConfig::default());
+            let transport = ReliableLink::new(
+                UdpClient::new(SERVER_ADDR.to_string()),
+                ReliabilityConfig::default(),
+            );
             if let Err(e) = transport.run(from_transport_tx, to_transport_rx).await {
                 eprintln!("❌ Transport error: {}", e);
             }
@@ -164,7 +166,11 @@ fn setup_system(mut commands: Commands) {
             custom_size: Some(bevy::math::Vec2::new(WINDOW_WIDTH as f32, 4.0)),
             ..default()
         },
-        Transform::from_xyz(WINDOW_WIDTH as f32 / 2.0, WINDOW_HEIGHT as f32 - GROUND_Y, 0.0),
+        Transform::from_xyz(
+            WINDOW_WIDTH as f32 / 2.0,
+            WINDOW_HEIGHT as f32 - GROUND_Y,
+            0.0,
+        ),
         GroundLine,
     ));
 

@@ -74,7 +74,10 @@ mod tests {
     async fn test_mock_provider_success() {
         let provider = MockAuthProvider;
 
-        let result = provider.authenticate("mock", b"test-credentials").await.unwrap();
+        let result = provider
+            .authenticate("mock", b"test-credentials")
+            .await
+            .unwrap();
 
         match result {
             AuthResult::Success { session_id } => {
@@ -88,7 +91,10 @@ mod tests {
     async fn test_mock_provider_unsupported_method() {
         let provider = MockAuthProvider;
 
-        let result = provider.authenticate("passcode", b"secret123").await.unwrap();
+        let result = provider
+            .authenticate("passcode", b"secret123")
+            .await
+            .unwrap();
 
         match result {
             AuthResult::Success { .. } => panic!("Expected failure"),

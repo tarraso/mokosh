@@ -19,11 +19,17 @@ async fn main() {
     // Create MockAuthProvider
     let auth_provider = Arc::new(MockAuthProvider);
     println!("Created MockAuthProvider");
-    println!("  Supported methods: {:?}\n", auth_provider.supported_methods());
+    println!(
+        "  Supported methods: {:?}\n",
+        auth_provider.supported_methods()
+    );
 
     // Test authentication directly
     println!("Testing authentication with 'mock' method:");
-    match auth_provider.authenticate("mock", b"test-credentials").await {
+    match auth_provider
+        .authenticate("mock", b"test-credentials")
+        .await
+    {
         Ok(result) => {
             println!("  Result: {:?}", result);
         }

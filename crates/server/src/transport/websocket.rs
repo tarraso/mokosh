@@ -309,13 +309,11 @@ mod tests {
             .await
             .unwrap();
 
-        let session_envelope = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            incoming_rx.recv(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let session_envelope =
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), incoming_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
 
         // Verify session ID is present
         assert!(!session_envelope.session_id.is_nil());
@@ -373,13 +371,11 @@ mod tests {
         }
 
         for i in 1u64..=5 {
-            let session_envelope = tokio::time::timeout(
-                tokio::time::Duration::from_secs(1),
-                incoming_rx.recv(),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            let session_envelope =
+                tokio::time::timeout(tokio::time::Duration::from_secs(1), incoming_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
 
             let received = session_envelope.envelope;
             assert_eq!(received.msg_id, i);
@@ -437,13 +433,11 @@ mod tests {
             .await
             .unwrap();
 
-        let session_envelope = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            incoming_rx.recv(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let session_envelope =
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), incoming_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
 
         let received = session_envelope.envelope;
         assert_eq!(received.route_id, valid_envelope.route_id);
@@ -513,21 +507,17 @@ mod tests {
             .unwrap();
 
         // Receive both messages
-        let session_envelope1 = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            incoming_rx.recv(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let session_envelope1 =
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), incoming_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
 
-        let session_envelope2 = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            incoming_rx.recv(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let session_envelope2 =
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), incoming_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
 
         // Verify different session IDs
         assert_ne!(session_envelope1.session_id, session_envelope2.session_id);
@@ -591,13 +581,11 @@ mod tests {
             .unwrap();
 
         // Get the session envelope
-        let session_envelope = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            incoming_rx.recv(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let session_envelope =
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), incoming_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
 
         let client1_session = session_envelope.session_id;
 
@@ -616,14 +604,12 @@ mod tests {
         outgoing_tx.send(response_session_envelope).await.unwrap();
 
         // Client1 should receive the response
-        let received_msg = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            ws_stream1.next(),
-        )
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+        let received_msg =
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_stream1.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
 
         if let Message::Binary(data) = received_msg {
             let received_envelope = Envelope::from_bytes(Bytes::from(data)).unwrap();

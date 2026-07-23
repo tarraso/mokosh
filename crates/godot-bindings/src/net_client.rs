@@ -2,14 +2,14 @@
 //!
 //! Godot-friendly wrapper around the Mokosh Client
 
+use godot::classes::{INode, Node};
 use godot::prelude::*;
-use godot::classes::{Node, INode};
+use mokosh_client::{transport::websocket::WebSocketClient, Client, ClientHandle};
+use mokosh_protocol::reliability::ReliabilityMode;
+use mokosh_protocol::Transport;
+use mokosh_protocol::{CodecType, Envelope};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use mokosh_protocol::{Envelope, CodecType};
-use mokosh_protocol::reliability::ReliabilityMode;
-use mokosh_client::{Client, ClientHandle, transport::websocket::WebSocketClient};
-use mokosh_protocol::Transport;
 
 use crate::runtime::{AsyncRuntime, EventQueue};
 
@@ -81,10 +81,12 @@ impl INode for NetClient {
                 }
                 ClientEvent::Disconnected { reason } => {
                     self.is_connected = false;
-                    self.base_mut().emit_signal("disconnected", &[reason.to_variant()]);
+                    self.base_mut()
+                        .emit_signal("disconnected", &[reason.to_variant()]);
                 }
                 ClientEvent::Error { error } => {
-                    self.base_mut().emit_signal("error_occurred", &[error.to_variant()]);
+                    self.base_mut()
+                        .emit_signal("error_occurred", &[error.to_variant()]);
                 }
             }
         }
@@ -109,12 +111,11 @@ impl INode for NetClient {
             match self.codec.decode::<serde_json::Value>(&envelope.payload) {
                 Ok(json_value) => {
                     // Convert to JSON string for GDScript
-                    let json_str = serde_json::to_string(&json_value)
-                        .unwrap_or_else(|_| "{}".to_string());
+                    let json_str =
+                        serde_json::to_string(&json_value).unwrap_or_else(|_| "{}".to_string());
 
-                    self.base_mut().emit_signal("message_received", &[
-                        json_str.to_variant()
-                    ]);
+                    self.base_mut()
+                        .emit_signal("message_received", &[json_str.to_variant()]);
                 }
                 Err(e) => {
                     eprintln!("Failed to decode message: {}", e);
@@ -193,7 +194,10 @@ impl NetClient {
         // Spawn WebSocket transport task
         runtime.handle().spawn(async move {
             let transport = WebSocketClient::new(url_str.clone());
-            if let Err(e) = transport.run(transport_incoming_tx, transport_outgoing_rx).await {
+            if let Err(e) = transport
+                .run(transport_incoming_tx, transport_outgoing_rx)
+                .await
+            {
                 eprintln!("Transport error: {}", e);
             }
         });

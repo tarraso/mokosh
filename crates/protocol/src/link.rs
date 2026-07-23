@@ -234,7 +234,10 @@ impl<P: PeerSet> Bridge<P> {
         for (key, seq, route_id) in dropped {
             let _ = self
                 .app_in_tx
-                .send(P::join(key, dropped_envelope(self.control_codec, seq, route_id)))
+                .send(P::join(
+                    key,
+                    dropped_envelope(self.control_codec, seq, route_id),
+                ))
                 .await;
         }
     }

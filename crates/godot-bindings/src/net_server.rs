@@ -2,8 +2,8 @@
 //!
 //! Godot-friendly wrapper around the Mokosh Server
 
+use godot::classes::{INode, Node};
 use godot::prelude::*;
-use godot::classes::{Node, INode};
 use mokosh_protocol::SessionEnvelope;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -66,26 +66,27 @@ impl INode for NetServer {
         for event in self.events.drain() {
             match event {
                 ServerEvent::ClientConnected { session_id } => {
-                    self.base_mut().emit_signal("client_connected", &[
-                        (session_id as i64).to_variant()
-                    ]);
+                    self.base_mut()
+                        .emit_signal("client_connected", &[(session_id as i64).to_variant()]);
                 }
                 ServerEvent::ClientDisconnected { session_id, reason } => {
-                    self.base_mut().emit_signal("client_disconnected", &[
-                        (session_id as i64).to_variant(),
-                        reason.to_variant()
-                    ]);
+                    self.base_mut().emit_signal(
+                        "client_disconnected",
+                        &[(session_id as i64).to_variant(), reason.to_variant()],
+                    );
                 }
-                ServerEvent::MessageReceived { session_id, message } => {
-                    self.base_mut().emit_signal("message_received", &[
-                        (session_id as i64).to_variant(),
-                        message.to_variant()
-                    ]);
+                ServerEvent::MessageReceived {
+                    session_id,
+                    message,
+                } => {
+                    self.base_mut().emit_signal(
+                        "message_received",
+                        &[(session_id as i64).to_variant(), message.to_variant()],
+                    );
                 }
                 ServerEvent::Error { error } => {
-                    self.base_mut().emit_signal("error_occurred", &[
-                        error.to_variant()
-                    ]);
+                    self.base_mut()
+                        .emit_signal("error_occurred", &[error.to_variant()]);
                 }
             }
         }

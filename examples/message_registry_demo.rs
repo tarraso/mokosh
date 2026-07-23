@@ -17,8 +17,8 @@
 
 use mokosh_client::Client;
 use mokosh_protocol::{
-    calculate_global_schema_hash, codec::Codec, Envelope, EnvelopeFlags, GameMessage, MessageRegistry,
-    SessionId, CURRENT_PROTOCOL_VERSION,
+    calculate_global_schema_hash, codec::Codec, Envelope, EnvelopeFlags, GameMessage,
+    MessageRegistry, SessionId, CURRENT_PROTOCOL_VERSION,
 };
 use mokosh_protocol_derive::GameMessage;
 use mokosh_server::Server;
@@ -91,10 +91,10 @@ async fn demo_old_way() {
     // Manual Envelope construction - lots of parameters to remember!
     let envelope = Envelope::new_simple(
         CURRENT_PROTOCOL_VERSION,
-        1,                              // codec_id - easy to get wrong
-        0x1111_2222_3333_4444,          // schema_hash - manual, can forget to update
-        100,                            // route_id - manual, typo-prone
-        1,                              // msg_id - need to track manually
+        1,                     // codec_id - easy to get wrong
+        0x1111_2222_3333_4444, // schema_hash - manual, can forget to update
+        100,                   // route_id - manual, typo-prone
+        1,                     // msg_id - need to track manually
         EnvelopeFlags::RELIABLE,
         payload,
     );
@@ -135,8 +135,14 @@ async fn demo_new_way() {
 
     let sent_envelope = outgoing_rx.recv().await.unwrap();
     println!("✅ Sent envelope (new way):");
-    println!("   route_id: {} (automatic from PlayerInput::ROUTE_ID)", sent_envelope.route_id);
-    println!("   schema_hash: {:#018x} (automatic from PlayerInput::SCHEMA_HASH)", sent_envelope.schema_hash);
+    println!(
+        "   route_id: {} (automatic from PlayerInput::ROUTE_ID)",
+        sent_envelope.route_id
+    );
+    println!(
+        "   schema_hash: {:#018x} (automatic from PlayerInput::SCHEMA_HASH)",
+        sent_envelope.schema_hash
+    );
     println!("   payload_len: {} bytes", sent_envelope.payload_len);
     println!("\n✨ Benefits:");
     println!("   - 1 line instead of 15");
@@ -157,12 +163,21 @@ fn demo_message_registry() {
     registry.register::<ChatMessage>();
 
     println!("✅ Registered {} message types:", registry.len());
-    println!("   - PlayerInput  (route_id={}, schema_hash={:#018x})",
-        PlayerInput::ROUTE_ID, PlayerInput::SCHEMA_HASH);
-    println!("   - PlayerState  (route_id={}, schema_hash={:#018x})",
-        PlayerState::ROUTE_ID, PlayerState::SCHEMA_HASH);
-    println!("   - ChatMessage  (route_id={}, schema_hash={:#018x})",
-        ChatMessage::ROUTE_ID, ChatMessage::SCHEMA_HASH);
+    println!(
+        "   - PlayerInput  (route_id={}, schema_hash={:#018x})",
+        PlayerInput::ROUTE_ID,
+        PlayerInput::SCHEMA_HASH
+    );
+    println!(
+        "   - PlayerState  (route_id={}, schema_hash={:#018x})",
+        PlayerState::ROUTE_ID,
+        PlayerState::SCHEMA_HASH
+    );
+    println!(
+        "   - ChatMessage  (route_id={}, schema_hash={:#018x})",
+        ChatMessage::ROUTE_ID,
+        ChatMessage::SCHEMA_HASH
+    );
 
     let global_hash = registry.global_schema_hash();
     println!("\n📊 Global schema hash: {:#018x}", global_hash);
@@ -201,7 +216,10 @@ fn demo_global_schema_hash() {
     let global_hash = calculate_global_schema_hash(&hashes);
 
     println!("\nGlobal schema hash (XOR):");
-    println!("   {:#018x} ^ {:#018x} ^ {:#018x}", hashes[0], hashes[1], hashes[2]);
+    println!(
+        "   {:#018x} ^ {:#018x} ^ {:#018x}",
+        hashes[0], hashes[1], hashes[2]
+    );
     println!("   = {:#018x}", global_hash);
 
     println!("\n💡 Why XOR?");
@@ -234,7 +252,10 @@ async fn demo_server_type_safe() {
     let sent = outgoing_rx.recv().await.unwrap();
     println!("✅ Server sent PlayerState:");
     println!("   route_id: {} (automatic)", sent.envelope.route_id);
-    println!("   schema_hash: {:#018x} (automatic)", sent.envelope.schema_hash);
+    println!(
+        "   schema_hash: {:#018x} (automatic)",
+        sent.envelope.schema_hash
+    );
     println!("   session_id: {}", sent.session_id);
 }
 

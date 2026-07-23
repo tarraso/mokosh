@@ -68,7 +68,11 @@ fn demo_json_codec(input: &PlayerInput) {
 
     // Encode
     let bytes = codec.encode(input).expect("Failed to encode");
-    println!("Encoded ({} bytes): {}", bytes.len(), String::from_utf8_lossy(&bytes));
+    println!(
+        "Encoded ({} bytes): {}",
+        bytes.len(),
+        String::from_utf8_lossy(&bytes)
+    );
 
     // Decode
     let decoded: PlayerInput = codec.decode(&bytes).expect("Failed to decode");
@@ -105,7 +109,9 @@ fn demo_raw_codec() {
     println!("Raw data ({} bytes): {:02x?}", raw_data.len(), raw_data);
 
     // Encode (pass-through)
-    let encoded = codec.encode_raw(raw_data.clone()).expect("Failed to encode");
+    let encoded = codec
+        .encode_raw(raw_data.clone())
+        .expect("Failed to encode");
     println!("Encoded ({} bytes): {:02x?}", encoded.len(), encoded);
 
     // Decode (pass-through)
@@ -139,10 +145,19 @@ fn demo_codec_registry(input: &PlayerInput) {
                 let bytes = codec.encode(input).expect("Failed to encode");
                 let decoded: PlayerInput = codec.decode(&bytes).expect("Failed to decode");
                 assert_eq!(input, &decoded);
-                println!("  {} (ID={}): {} bytes ✓", codec.name(), codec.id(), bytes.len());
+                println!(
+                    "  {} (ID={}): {} bytes ✓",
+                    codec.name(),
+                    codec.id(),
+                    bytes.len()
+                );
             }
             CodecType::Raw(_) => {
-                println!("  {} (ID={}): skipped (not for serde types)", codec.name(), codec.id());
+                println!(
+                    "  {} (ID={}): skipped (not for serde types)",
+                    codec.name(),
+                    codec.id()
+                );
             }
         }
     }

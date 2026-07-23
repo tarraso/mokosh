@@ -61,13 +61,11 @@ struct NetworkClient {
     game_state_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Envelope>>>,
 }
 
-#[derive(Resource)]
-#[derive(Default)]
+#[derive(Resource, Default)]
 struct GameEntities {
     players: HashMap<String, Entity>,
     boxes: HashMap<u32, Entity>,
 }
-
 
 #[derive(Resource)]
 struct LocalSessionId(String);
@@ -104,8 +102,8 @@ fn main() {
         let hello = Hello {
             protocol_version: CURRENT_PROTOCOL_VERSION,
             min_protocol_version: CURRENT_PROTOCOL_VERSION,
-            codec_id: 1, // JSON
-            schema_hash: 0, // Not used for this example
+            codec_id: 1,        // JSON
+            schema_hash: 0,     // Not used for this example
             reliability: false, // WebSocket transport, reliability layer off
         };
 
@@ -167,10 +165,7 @@ fn main() {
         .insert_resource(LocalSessionId(session_id))
         .insert_resource(MessageCounter(1))
         .add_systems(Startup, setup_system)
-        .add_systems(
-            Update,
-            (input_system, network_receive_system).chain(),
-        )
+        .add_systems(Update, (input_system, network_receive_system).chain())
         .run();
 }
 
@@ -192,7 +187,11 @@ fn setup_system(mut commands: Commands) {
             custom_size: Some(bevy::math::Vec2::new(WINDOW_WIDTH as f32, 4.0)),
             ..default()
         },
-        Transform::from_xyz(WINDOW_WIDTH as f32 / 2.0, WINDOW_HEIGHT as f32 - GROUND_Y, 0.0),
+        Transform::from_xyz(
+            WINDOW_WIDTH as f32 / 2.0,
+            WINDOW_HEIGHT as f32 - GROUND_Y,
+            0.0,
+        ),
         GroundLine,
     ));
 
@@ -275,7 +274,8 @@ fn network_receive_system(
                             // Physics position is top-left, Bevy Transform is center
                             if let Ok((_player, mut transform)) = player_query.get_mut(entity) {
                                 transform.translation.x = player_state.position.x + 16.0; // center
-                                transform.translation.y = WINDOW_HEIGHT as f32 - (player_state.position.y + 16.0);
+                                transform.translation.y =
+                                    WINDOW_HEIGHT as f32 - (player_state.position.y + 16.0);
                             }
                         } else {
                             // Spawn new player
@@ -329,7 +329,8 @@ fn network_receive_system(
                             // Physics position is top-left, Bevy Transform is center
                             if let Ok((_box_entity, mut transform)) = box_query.get_mut(entity) {
                                 transform.translation.x = box_state.position.x + 16.0; // center
-                                transform.translation.y = WINDOW_HEIGHT as f32 - (box_state.position.y + 16.0);
+                                transform.translation.y =
+                                    WINDOW_HEIGHT as f32 - (box_state.position.y + 16.0);
                             }
                         } else {
                             // Spawn new box (invert Y for rendering)

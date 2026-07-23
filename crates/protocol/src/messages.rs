@@ -416,6 +416,9 @@ mod tests {
 
         assert_eq!(auth_response, deserialized);
         assert!(!auth_response.success);
-        assert_eq!(auth_response.error_message, Some("Invalid passcode".to_string()));
+        assert_eq!(
+            auth_response.error_message,
+            Some("Invalid passcode".to_string())
+        );
     }
 }

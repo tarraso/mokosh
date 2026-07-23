@@ -720,9 +720,10 @@ where
         session_id: SessionId,
         envelope: Envelope,
     ) -> Result<(), ServerError> {
-        let dropped: MessageDropped = self.control_codec.decode(&envelope.payload).map_err(|e| {
-            ServerError::InvalidMessage(format!("Failed to parse dropped: {}", e))
-        })?;
+        let dropped: MessageDropped = self
+            .control_codec
+            .decode(&envelope.payload)
+            .map_err(|e| ServerError::InvalidMessage(format!("Failed to parse dropped: {}", e)))?;
         let _ = self.event_tx.send(GameEvent::MessageDropped {
             session_id,
             seq: dropped.seq,
@@ -730,7 +731,6 @@ where
         });
         Ok(())
     }
-
 
     /// Handles game messages (route_id >= 100).
     ///
@@ -1920,7 +1920,10 @@ mod tests {
         // Server should send DISCONNECT message
         let disconnect_msg = outgoing_rx.try_recv();
         assert!(disconnect_msg.is_ok());
-        assert_eq!(disconnect_msg.unwrap().envelope.route_id, routes::DISCONNECT);
+        assert_eq!(
+            disconnect_msg.unwrap().envelope.route_id,
+            routes::DISCONNECT
+        );
     }
 
     #[tokio::test]

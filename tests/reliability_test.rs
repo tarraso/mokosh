@@ -5,17 +5,17 @@
 //! dropping envelopes on the channel hop faithfully simulates UDP loss).
 
 use bytes::Bytes;
+use mokosh_client::transport::memory::MemoryTransport;
+use mokosh_client::transport::{ReliableLink, Transport};
+use mokosh_client::{Client, ClientConfig};
+use mokosh_protocol::compression::NoCompressor;
+use mokosh_protocol::encryption::NoEncryptor;
 use mokosh_protocol::messages::{routes, Hello};
 use mokosh_protocol::{
     CodecType, Envelope, ReliabilityConfig, ReliabilityMode, SessionEnvelope, SessionId,
     CURRENT_PROTOCOL_VERSION,
 };
-use mokosh_protocol::compression::NoCompressor;
-use mokosh_protocol::encryption::NoEncryptor;
 use mokosh_protocol_derive::GameMessage;
-use mokosh_client::transport::memory::MemoryTransport;
-use mokosh_client::transport::{ReliableLink, Transport};
-use mokosh_client::{Client, ClientConfig};
 use mokosh_server::transport::ReliableServerLink;
 use mokosh_server::{GameEvent, Server, ServerConfig};
 use serde::{Deserialize, Serialize};
@@ -126,7 +126,10 @@ async fn server_to_client_reliable_ordered_survives_loss() {
                             server
                                 .send_message_with(
                                     s,
-                                    TestMsg { seq: i, value: i as f32 },
+                                    TestMsg {
+                                        seq: i,
+                                        value: i as f32,
+                                    },
                                     ReliabilityMode::ReliableOrdered,
                                     Duration::from_secs(30),
                                 )

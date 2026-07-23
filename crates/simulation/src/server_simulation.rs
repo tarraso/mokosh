@@ -277,7 +277,9 @@ impl<S: Simulation> ServerSimulation<S> {
 #[derive(Debug, thiserror::Error)]
 pub enum ServerSimulationError {
     /// Invalid sequence number (duplicate or too old)
-    #[error("Invalid sequence from session {session_id}: got {sequence}, last was {last_sequence}")]
+    #[error(
+        "Invalid sequence from session {session_id}: got {sequence}, last was {last_sequence}"
+    )]
     InvalidSequence {
         session_id: SessionId,
         sequence: u32,
@@ -285,7 +287,9 @@ pub enum ServerSimulationError {
     },
 
     /// Out-of-order sequence in strict mode
-    #[error("Out-of-order sequence from session {session_id}: got {sequence}, expected {expected}")]
+    #[error(
+        "Out-of-order sequence from session {session_id}: got {sequence}, expected {expected}"
+    )]
     OutOfOrder {
         session_id: SessionId,
         sequence: u32,
@@ -343,12 +347,7 @@ mod tests {
         let mut server_sim = ServerSimulation::new(sim);
         let session_id = SessionId::new_v4();
 
-        let result = server_sim.apply_client_input(
-            session_id,
-            1,
-            TestInput { dx: 5.0 },
-            0.016,
-        );
+        let result = server_sim.apply_client_input(session_id, 1, TestInput { dx: 5.0 }, 0.016);
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 1);
@@ -367,12 +366,7 @@ mod tests {
             .unwrap();
 
         // Duplicate sequence rejected
-        let result = server_sim.apply_client_input(
-            session_id,
-            1,
-            TestInput { dx: 10.0 },
-            0.016,
-        );
+        let result = server_sim.apply_client_input(session_id, 1, TestInput { dx: 10.0 }, 0.016);
 
         assert!(result.is_err());
         assert_eq!(server_sim.simulation().x, 5.0); // State unchanged
@@ -389,12 +383,7 @@ mod tests {
             .unwrap();
 
         // Old sequence rejected (3 < 5)
-        let result = server_sim.apply_client_input(
-            session_id,
-            3,
-            TestInput { dx: 10.0 },
-            0.016,
-        );
+        let result = server_sim.apply_client_input(session_id, 3, TestInput { dx: 10.0 }, 0.016);
 
         assert!(result.is_err());
         assert_eq!(server_sim.simulation().x, 5.0); // State unchanged
@@ -411,12 +400,7 @@ mod tests {
             .unwrap();
 
         // Skipped sequence (2) - should be rejected in strict mode
-        let result = server_sim.apply_client_input(
-            session_id,
-            3,
-            TestInput { dx: 1.0 },
-            0.016,
-        );
+        let result = server_sim.apply_client_input(session_id, 3, TestInput { dx: 1.0 }, 0.016);
 
         assert!(result.is_err());
     }
@@ -432,12 +416,7 @@ mod tests {
             .unwrap();
 
         // Skipped sequence (2) - should be accepted in non-strict mode
-        let result = server_sim.apply_client_input(
-            session_id,
-            3,
-            TestInput { dx: 1.0 },
-            0.016,
-        );
+        let result = server_sim.apply_client_input(session_id, 3, TestInput { dx: 1.0 }, 0.016);
 
         assert!(result.is_ok());
         assert_eq!(server_sim.simulation().x, 2.0);

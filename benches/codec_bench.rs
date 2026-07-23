@@ -1,9 +1,9 @@
 //! Benchmark for codec comparison (JSON, Postcard, Raw)
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
 use bytes::Bytes;
-use serde::{Serialize, Deserialize};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use mokosh_protocol::codec::{Codec, JsonCodec, PostcardCodec, RawCodec};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct SimpleMessage {
@@ -106,14 +106,34 @@ fn bench_json_complex(c: &mut Criterion) {
     let message = ComplexMessage {
         id: 12345,
         session_id: "session-abc-123".to_string(),
-        position: Position { x: 100.0, y: 200.0, z: 50.0 },
-        velocity: Velocity { x: 10.0, y: -5.0, z: 0.0 },
+        position: Position {
+            x: 100.0,
+            y: 200.0,
+            z: 50.0,
+        },
+        velocity: Velocity {
+            x: 10.0,
+            y: -5.0,
+            z: 0.0,
+        },
         health: 85.5,
         mana: 120.0,
         inventory: vec![
-            Item { item_id: 1001, quantity: 5, durability: 0.9 },
-            Item { item_id: 2002, quantity: 1, durability: 1.0 },
-            Item { item_id: 3003, quantity: 20, durability: 0.5 },
+            Item {
+                item_id: 1001,
+                quantity: 5,
+                durability: 0.9,
+            },
+            Item {
+                item_id: 2002,
+                quantity: 1,
+                durability: 1.0,
+            },
+            Item {
+                item_id: 3003,
+                quantity: 20,
+                durability: 0.5,
+            },
         ],
     };
 
@@ -143,14 +163,34 @@ fn bench_postcard_complex(c: &mut Criterion) {
     let message = ComplexMessage {
         id: 12345,
         session_id: "session-abc-123".to_string(),
-        position: Position { x: 100.0, y: 200.0, z: 50.0 },
-        velocity: Velocity { x: 10.0, y: -5.0, z: 0.0 },
+        position: Position {
+            x: 100.0,
+            y: 200.0,
+            z: 50.0,
+        },
+        velocity: Velocity {
+            x: 10.0,
+            y: -5.0,
+            z: 0.0,
+        },
         health: 85.5,
         mana: 120.0,
         inventory: vec![
-            Item { item_id: 1001, quantity: 5, durability: 0.9 },
-            Item { item_id: 2002, quantity: 1, durability: 1.0 },
-            Item { item_id: 3003, quantity: 20, durability: 0.5 },
+            Item {
+                item_id: 1001,
+                quantity: 5,
+                durability: 0.9,
+            },
+            Item {
+                item_id: 2002,
+                quantity: 1,
+                durability: 1.0,
+            },
+            Item {
+                item_id: 3003,
+                quantity: 20,
+                durability: 0.5,
+            },
         ],
     };
 
@@ -205,14 +245,34 @@ fn bench_codec_comparison(c: &mut Criterion) {
     let message = ComplexMessage {
         id: 12345,
         session_id: "session-abc-123".to_string(),
-        position: Position { x: 100.0, y: 200.0, z: 50.0 },
-        velocity: Velocity { x: 10.0, y: -5.0, z: 0.0 },
+        position: Position {
+            x: 100.0,
+            y: 200.0,
+            z: 50.0,
+        },
+        velocity: Velocity {
+            x: 10.0,
+            y: -5.0,
+            z: 0.0,
+        },
         health: 85.5,
         mana: 120.0,
         inventory: vec![
-            Item { item_id: 1001, quantity: 5, durability: 0.9 },
-            Item { item_id: 2002, quantity: 1, durability: 1.0 },
-            Item { item_id: 3003, quantity: 20, durability: 0.5 },
+            Item {
+                item_id: 1001,
+                quantity: 5,
+                durability: 0.9,
+            },
+            Item {
+                item_id: 2002,
+                quantity: 1,
+                durability: 1.0,
+            },
+            Item {
+                item_id: 3003,
+                quantity: 20,
+                durability: 0.5,
+            },
         ],
     };
 
@@ -231,12 +291,16 @@ fn bench_codec_comparison(c: &mut Criterion) {
         })
     });
 
-    group.bench_with_input(BenchmarkId::new("postcard", "encode"), &message, |b, msg| {
-        b.iter(|| {
-            let bytes: Bytes = postcard_codec.encode(black_box(msg)).unwrap();
-            black_box(bytes)
-        })
-    });
+    group.bench_with_input(
+        BenchmarkId::new("postcard", "encode"),
+        &message,
+        |b, msg| {
+            b.iter(|| {
+                let bytes: Bytes = postcard_codec.encode(black_box(msg)).unwrap();
+                black_box(bytes)
+            })
+        },
+    );
 
     group.finish();
 }

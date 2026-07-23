@@ -174,8 +174,9 @@ impl Compressor for Lz4Compressor {
     fn compress(&self, data: &[u8]) -> CompressionResult<Bytes> {
         // Prepend original size (u32 big-endian) for decompression
         let original_size = data.len() as u32;
-        let compressed_data = lz4::block::compress(data, Some(lz4::block::CompressionMode::DEFAULT), false)
-            .map_err(|e| CompressionError::Lz4CompressionFailed(e.to_string()))?;
+        let compressed_data =
+            lz4::block::compress(data, Some(lz4::block::CompressionMode::DEFAULT), false)
+                .map_err(|e| CompressionError::Lz4CompressionFailed(e.to_string()))?;
 
         // Combine size prefix + compressed data
         let mut result = Vec::with_capacity(4 + compressed_data.len());
@@ -189,7 +190,7 @@ impl Compressor for Lz4Compressor {
         // Extract original size from first 4 bytes
         if data.len() < 4 {
             return Err(CompressionError::DecompressionFailed(
-                "Lz4 compressed data too short (missing size prefix)".to_string()
+                "Lz4 compressed data too short (missing size prefix)".to_string(),
             ));
         }
 
@@ -251,8 +252,14 @@ mod tests {
         assert!(compressed10.len() <= compressed1.len());
 
         // Both should decompress correctly
-        assert_eq!(data.as_slice(), level1.decompress(&compressed1).unwrap().as_ref());
-        assert_eq!(data.as_slice(), level10.decompress(&compressed10).unwrap().as_ref());
+        assert_eq!(
+            data.as_slice(),
+            level1.decompress(&compressed1).unwrap().as_ref()
+        );
+        assert_eq!(
+            data.as_slice(),
+            level10.decompress(&compressed10).unwrap().as_ref()
+        );
     }
 
     #[test]
@@ -290,12 +297,16 @@ mod tests {
         let lz4_compressed = lz4.compress(&data).unwrap();
 
         println!("Original: {} bytes", data.len());
-        println!("Zstd: {} bytes ({}% of original)",
-                 zstd_compressed.len(),
-                 (zstd_compressed.len() * 100) / data.len());
-        println!("Lz4: {} bytes ({}% of original)",
-                 lz4_compressed.len(),
-                 (lz4_compressed.len() * 100) / data.len());
+        println!(
+            "Zstd: {} bytes ({}% of original)",
+            zstd_compressed.len(),
+            (zstd_compressed.len() * 100) / data.len()
+        );
+        println!(
+            "Lz4: {} bytes ({}% of original)",
+            lz4_compressed.len(),
+            (lz4_compressed.len() * 100) / data.len()
+        );
 
         // Both should achieve significant compression
         assert!(zstd_compressed.len() < data.len() / 10);

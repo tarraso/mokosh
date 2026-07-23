@@ -44,7 +44,13 @@ pub struct MessageCounter(pub u64);
 /// Global connection ready channel
 /// Used to pass connection info from async task to Bevy systems
 static CONNECTION_READY: OnceLock<
-    StdMutex<Option<(mpsc::Sender<Envelope>, Arc<futures::lock::Mutex<mpsc::Receiver<Envelope>>>, String)>>,
+    StdMutex<
+        Option<(
+            mpsc::Sender<Envelope>,
+            Arc<futures::lock::Mutex<mpsc::Receiver<Envelope>>>,
+            String,
+        )>,
+    >,
 > = OnceLock::new();
 
 // ============================================================================
@@ -81,8 +87,8 @@ async fn connect_to_server(
         reliability: false, // WebSocket transport, reliability layer off
     };
 
-    let hello_payload = serde_json::to_vec(&hello)
-        .map_err(|e| format!("Failed to serialize HELLO: {}", e))?;
+    let hello_payload =
+        serde_json::to_vec(&hello).map_err(|e| format!("Failed to serialize HELLO: {}", e))?;
 
     let hello_envelope = Envelope::new_simple(
         CURRENT_PROTOCOL_VERSION,
@@ -107,10 +113,7 @@ async fn connect_to_server(
             if envelope.route_id == routes::HELLO_OK {
                 let hello_ok: HelloOk = serde_json::from_slice(&envelope.payload)
                     .map_err(|e| format!("Failed to parse HELLO_OK: {}", e))?;
-                log::info!(
-                    "✅ HELLO_OK received! Session ID: {}",
-                    hello_ok.session_id
-                );
+                log::info!("✅ HELLO_OK received! Session ID: {}", hello_ok.session_id);
                 break hello_ok.session_id;
             }
         } else {
@@ -244,13 +247,16 @@ pub fn network_receive_system(
                             {
                                 // Update/spawn players
                                 for player_state in &game_state.players {
-                                    if let Some(&entity) = game_entities.players.get(&player_state.id) {
+                                    if let Some(&entity) =
+                                        game_entities.players.get(&player_state.id)
+                                    {
                                         if let Ok((_player, mut transform)) =
                                             player_query.get_mut(entity)
                                         {
-                                            transform.translation.x = player_state.position.x + 16.0;
-                                            transform.translation.y =
-                                                WINDOW_HEIGHT as f32 - (player_state.position.y + 16.0);
+                                            transform.translation.x =
+                                                player_state.position.x + 16.0;
+                                            transform.translation.y = WINDOW_HEIGHT as f32
+                                                - (player_state.position.y + 16.0);
                                         }
                                     } else {
                                         let is_local = game_entities.players.is_empty();
@@ -263,7 +269,9 @@ pub fn network_receive_system(
                                         let mut entity_cmd = commands.spawn((
                                             Sprite {
                                                 color,
-                                                custom_size: Some(bevy::math::Vec2::new(32.0, 32.0)),
+                                                custom_size: Some(bevy::math::Vec2::new(
+                                                    32.0, 32.0,
+                                                )),
                                                 ..default()
                                             },
                                             Transform::from_xyz(
@@ -288,9 +296,15 @@ pub fn network_receive_system(
                                             .insert(player_state.id.clone(), entity);
 
                                         if is_local {
-                                            log::info!("👤 You joined the game! ID: {}", player_state.id);
+                                            log::info!(
+                                                "👤 You joined the game! ID: {}",
+                                                player_state.id
+                                            );
                                         } else {
-                                            log::info!("👥 Remote player joined: {}", player_state.id);
+                                            log::info!(
+                                                "👥 Remote player joined: {}",
+                                                player_state.id
+                                            );
                                         }
                                     }
                                 }
@@ -302,8 +316,8 @@ pub fn network_receive_system(
                                             box_query.get_mut(entity)
                                         {
                                             transform.translation.x = box_state.position.x + 16.0;
-                                            transform.translation.y =
-                                                WINDOW_HEIGHT as f32 - (box_state.position.y + 16.0);
+                                            transform.translation.y = WINDOW_HEIGHT as f32
+                                                - (box_state.position.y + 16.0);
                                         }
                                     } else {
                                         let entity = commands
@@ -317,7 +331,8 @@ pub fn network_receive_system(
                                                 },
                                                 Transform::from_xyz(
                                                     box_state.position.x + 16.0,
-                                                    WINDOW_HEIGHT as f32 - (box_state.position.y + 16.0),
+                                                    WINDOW_HEIGHT as f32
+                                                        - (box_state.position.y + 16.0),
                                                     1.0,
                                                 ),
                                                 BoxEntity {

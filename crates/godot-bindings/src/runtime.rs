@@ -20,9 +20,7 @@ pub struct AsyncRuntime {
 impl AsyncRuntime {
     /// Create a new async runtime on a background thread
     pub fn new() -> Self {
-        let runtime = Arc::new(
-            Runtime::new().expect("Failed to create tokio runtime")
-        );
+        let runtime = Arc::new(Runtime::new().expect("Failed to create tokio runtime"));
 
         let runtime_clone = Arc::clone(&runtime);
         let handle = thread::spawn(move || {

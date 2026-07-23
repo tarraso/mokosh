@@ -216,8 +216,8 @@ impl Envelope {
         let payload_len = data.get_u32();
 
         // Parse flags
-        let flags = EnvelopeFlags::from_bits(flags_byte)
-            .ok_or(EnvelopeError::InvalidFlags(flags_byte))?;
+        let flags =
+            EnvelopeFlags::from_bits(flags_byte).ok_or(EnvelopeError::InvalidFlags(flags_byte))?;
 
         // Check if we have enough data for the payload
         if data.len() < payload_len as usize {
@@ -285,11 +285,11 @@ mod tests {
     fn test_envelope_new() {
         let payload = Bytes::from_static(b"test payload");
         let envelope = Envelope::new_simple(
-            1,                    // protocol_version
-            2,                    // codec_id (Postcard)
-            0x1234567890ABCDEF,   // schema_hash
-            100,                  // route_id
-            42,                   // msg_id
+            1,                  // protocol_version
+            2,                  // codec_id (Postcard)
+            0x1234567890ABCDEF, // schema_hash
+            100,                // route_id
+            42,                 // msg_id
             EnvelopeFlags::RELIABLE,
             payload.clone(),
         );
@@ -309,11 +309,11 @@ mod tests {
     fn test_envelope_serialization() {
         let payload = Bytes::from_static(b"hello");
         let envelope = Envelope::new_simple(
-            256,                  // protocol_version (v1.0)
-            1,                    // codec_id (JSON)
-            0xAABBCCDDEEFF0011,   // schema_hash
-            200,                  // route_id
-            999,                  // msg_id
+            256,                // protocol_version (v1.0)
+            1,                  // codec_id (JSON)
+            0xAABBCCDDEEFF0011, // schema_hash
+            200,                // route_id
+            999,                // msg_id
             EnvelopeFlags::RELIABLE | EnvelopeFlags::ENCRYPTED,
             payload,
         );
@@ -329,7 +329,11 @@ mod tests {
         let payload = Bytes::from_static(b"test");
 
         let envelope = Envelope::new_simple(
-            1, 1, 0, 100, 1,
+            1,
+            1,
+            0,
+            100,
+            1,
             EnvelopeFlags::RELIABLE | EnvelopeFlags::COMPRESSED,
             payload,
         );
@@ -344,7 +348,11 @@ mod tests {
     fn test_envelope_rpc() {
         let payload = Bytes::from_static(b"rpc call");
         let envelope = Envelope::new(
-            1, 1, 0, 100, 1,
+            1,
+            1,
+            0,
+            100,
+            1,
             12345, // correlation_id for RPC
             EnvelopeFlags::RELIABLE,
             payload,
@@ -373,15 +381,15 @@ mod tests {
         let mut buf = BytesMut::with_capacity(ENVELOPE_HEADER_SIZE + 5);
 
         // Valid header but invalid flags (0xFF has reserved bits set)
-        buf.put_u16(1);              // protocol_version
-        buf.put_u8(1);               // codec_id
-        buf.put_u64(0);              // schema_hash
-        buf.put_u16(100);            // route_id
-        buf.put_u64(1);              // msg_id
-        buf.put_u64(0);              // correlation_id
-        buf.put_u8(0xFF);            // invalid flags (reserved bits set)
-        buf.put_u32(5);              // payload_len
-        buf.put_slice(b"hello");     // payload
+        buf.put_u16(1); // protocol_version
+        buf.put_u8(1); // codec_id
+        buf.put_u64(0); // schema_hash
+        buf.put_u16(100); // route_id
+        buf.put_u64(1); // msg_id
+        buf.put_u64(0); // correlation_id
+        buf.put_u8(0xFF); // invalid flags (reserved bits set)
+        buf.put_u32(5); // payload_len
+        buf.put_slice(b"hello"); // payload
 
         let result = Envelope::from_bytes(buf.freeze());
         assert!(matches!(result, Err(EnvelopeError::InvalidFlags(_))));
@@ -410,11 +418,8 @@ mod tests {
     fn test_large_payload() {
         let large_payload = vec![0xAB; 65536]; // 64KB
         let payload = Bytes::from(large_payload);
-        let envelope = Envelope::new_simple(
-            1, 1, 0, 100, 1,
-            EnvelopeFlags::COMPRESSED,
-            payload.clone(),
-        );
+        let envelope =
+            Envelope::new_simple(1, 1, 0, 100, 1, EnvelopeFlags::COMPRESSED, payload.clone());
 
         let bytes = envelope.to_bytes();
         let deserialized = Envelope::from_bytes(bytes).expect("Failed to deserialize");

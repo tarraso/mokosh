@@ -17,7 +17,9 @@ use mokosh_client::{Client, ClientConfig};
 use mokosh_examples_shared::platformer::{GameState, PlayerInput};
 use mokosh_protocol::compression::NoCompressor;
 use mokosh_protocol::encryption::NoEncryptor;
-use mokosh_protocol::{CodecType, Envelope, EnvelopeFlags, GameMessage, ReliabilityConfig, CURRENT_PROTOCOL_VERSION};
+use mokosh_protocol::{
+    CodecType, Envelope, EnvelopeFlags, GameMessage, ReliabilityConfig, CURRENT_PROTOCOL_VERSION,
+};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -40,8 +42,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start the UDP transport, wrapped in the reliability decorator (the Client
     // event loop is reliability-agnostic; the link adds ACK/retransmit/ordering).
     tokio::spawn(async move {
-        let transport =
-            ReliableLink::new(UdpClient::new(SERVER_ADDR.to_string()), ReliabilityConfig::default());
+        let transport = ReliableLink::new(
+            UdpClient::new(SERVER_ADDR.to_string()),
+            ReliabilityConfig::default(),
+        );
         if let Err(e) = transport.run(from_transport_tx, to_transport_rx).await {
             eprintln!("❌ Transport error: {}", e);
         }

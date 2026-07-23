@@ -125,8 +125,7 @@ fn bench_compression_ratio(c: &mut Criterion) {
         // Zstd
         let zstd_compressor = ZstdCompressor::new();
         let zstd_compressed = zstd_compressor.compress(&data).unwrap();
-        let zstd_ratio =
-            ((data.len() - zstd_compressed.len()) as f64 / data.len() as f64) * 100.0;
+        let zstd_ratio = ((data.len() - zstd_compressed.len()) as f64 / data.len() as f64) * 100.0;
 
         // Lz4
         let lz4_compressor = Lz4Compressor::new();
@@ -143,17 +142,13 @@ fn bench_compression_ratio(c: &mut Criterion) {
             lz4_ratio
         );
 
-        group.bench_with_input(
-            BenchmarkId::new("zstd_roundtrip", size),
-            size,
-            |b, _| {
-                b.iter(|| {
-                    let compressed = zstd_compressor.compress(black_box(&data)).unwrap();
-                    let decompressed = zstd_compressor.decompress(&compressed).unwrap();
-                    black_box(decompressed)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("zstd_roundtrip", size), size, |b, _| {
+            b.iter(|| {
+                let compressed = zstd_compressor.compress(black_box(&data)).unwrap();
+                let decompressed = zstd_compressor.decompress(&compressed).unwrap();
+                black_box(decompressed)
+            });
+        });
 
         group.bench_with_input(BenchmarkId::new("lz4_roundtrip", size), size, |b, _| {
             b.iter(|| {

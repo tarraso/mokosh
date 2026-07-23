@@ -4,6 +4,7 @@
 //! the browser's native WebSocket API through wasm-bindgen.
 
 use super::Transport;
+use crate::compat::mpsc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::SinkExt;
@@ -11,7 +12,6 @@ use js_sys::{ArrayBuffer, Uint8Array};
 use mokosh_protocol::Envelope;
 use std::cell::RefCell;
 use std::rc::Rc;
-use crate::compat::mpsc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{BinaryType, CloseEvent, ErrorEvent, MessageEvent, WebSocket};
@@ -123,11 +123,15 @@ impl Transport for BrowserWebSocketClient {
                 }
                 Some(WsEvent::Close) => {
                     tracing::error!("WebSocket closed before open");
-                    return Err(BrowserWebSocketError::ConnectionError("Closed before open".to_string()));
+                    return Err(BrowserWebSocketError::ConnectionError(
+                        "Closed before open".to_string(),
+                    ));
                 }
                 None => {
                     tracing::error!("Event channel closed before WebSocket open");
-                    return Err(BrowserWebSocketError::ConnectionError("Channel closed".to_string()));
+                    return Err(BrowserWebSocketError::ConnectionError(
+                        "Channel closed".to_string(),
+                    ));
                 }
                 _ => {
                     // Ignore other events before open

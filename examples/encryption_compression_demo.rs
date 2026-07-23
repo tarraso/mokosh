@@ -55,9 +55,15 @@ async fn main() {
 
     let game_state = GameState::new();
     println!("Game State:");
-    println!("  - Player positions: {}", game_state.player_positions.len());
+    println!(
+        "  - Player positions: {}",
+        game_state.player_positions.len()
+    );
     println!("  - Enemy positions: {}", game_state.enemy_positions.len());
-    println!("  - Terrain data length: {} chars", game_state.terrain_data.len());
+    println!(
+        "  - Terrain data length: {} chars",
+        game_state.terrain_data.len()
+    );
     println!();
 
     // Test different configurations
@@ -85,11 +91,31 @@ async fn main() {
     // Summary
     println!("\n=== Size Comparison ===");
     println!("Plain:                {:5} bytes (baseline)", size_plain);
-    println!("Zstd:                 {:5} bytes ({:5.1}% of baseline)", size_zstd, percentage(size_zstd, size_plain));
-    println!("Lz4:                  {:5} bytes ({:5.1}% of baseline)", size_lz4, percentage(size_lz4, size_plain));
-    println!("Encrypted:            {:5} bytes ({:5.1}% of baseline)", size_encrypted, percentage(size_encrypted, size_plain));
-    println!("Zstd + Encrypted:     {:5} bytes ({:5.1}% of baseline)", size_zstd_encrypted, percentage(size_zstd_encrypted, size_plain));
-    println!("Lz4 + Encrypted:      {:5} bytes ({:5.1}% of baseline)", size_lz4_encrypted, percentage(size_lz4_encrypted, size_plain));
+    println!(
+        "Zstd:                 {:5} bytes ({:5.1}% of baseline)",
+        size_zstd,
+        percentage(size_zstd, size_plain)
+    );
+    println!(
+        "Lz4:                  {:5} bytes ({:5.1}% of baseline)",
+        size_lz4,
+        percentage(size_lz4, size_plain)
+    );
+    println!(
+        "Encrypted:            {:5} bytes ({:5.1}% of baseline)",
+        size_encrypted,
+        percentage(size_encrypted, size_plain)
+    );
+    println!(
+        "Zstd + Encrypted:     {:5} bytes ({:5.1}% of baseline)",
+        size_zstd_encrypted,
+        percentage(size_zstd_encrypted, size_plain)
+    );
+    println!(
+        "Lz4 + Encrypted:      {:5} bytes ({:5.1}% of baseline)",
+        size_lz4_encrypted,
+        percentage(size_lz4_encrypted, size_plain)
+    );
 
     println!("\n=== Key Takeaways ===");
     println!("• Compression reduces payload size for repeated/structured data");
@@ -113,7 +139,10 @@ async fn test_plain(message: GameState) -> usize {
     let envelope = outgoing_rx.recv().await.unwrap();
     let payload_size = envelope.payload.len();
 
-    println!("{:40} -> {:5} bytes", "Plain (no compression, no encryption)", payload_size);
+    println!(
+        "{:40} -> {:5} bytes",
+        "Plain (no compression, no encryption)", payload_size
+    );
     payload_size
 }
 
@@ -179,7 +208,10 @@ async fn test_encrypted(encryption_key: [u8; 32], message: GameState) -> usize {
     let envelope = outgoing_rx.recv().await.unwrap();
     let payload_size = envelope.payload.len();
 
-    println!("{:40} -> {:5} bytes", "ChaCha20-Poly1305 encryption only", payload_size);
+    println!(
+        "{:40} -> {:5} bytes",
+        "ChaCha20-Poly1305 encryption only", payload_size
+    );
     payload_size
 }
 
@@ -201,7 +233,10 @@ async fn test_zstd_encrypted(encryption_key: [u8; 32], message: GameState) -> us
     let envelope = outgoing_rx.recv().await.unwrap();
     let payload_size = envelope.payload.len();
 
-    println!("{:40} -> {:5} bytes", "Zstd compression + encryption", payload_size);
+    println!(
+        "{:40} -> {:5} bytes",
+        "Zstd compression + encryption", payload_size
+    );
     payload_size
 }
 
@@ -223,7 +258,10 @@ async fn test_lz4_encrypted(encryption_key: [u8; 32], message: GameState) -> usi
     let envelope = outgoing_rx.recv().await.unwrap();
     let payload_size = envelope.payload.len();
 
-    println!("{:40} -> {:5} bytes", "Lz4 compression + encryption", payload_size);
+    println!(
+        "{:40} -> {:5} bytes",
+        "Lz4 compression + encryption", payload_size
+    );
     payload_size
 }
 

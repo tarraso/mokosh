@@ -260,7 +260,8 @@ impl<I> InputBuffer<I> {
         if self.inputs.len() >= self.max_size {
             self.inputs.remove(0); // Drop oldest
         }
-        self.inputs.push(PendingInput::new(sequence, input, delta_time));
+        self.inputs
+            .push(PendingInput::new(sequence, input, delta_time));
     }
 
     /// Removes all inputs up to and including the given sequence number

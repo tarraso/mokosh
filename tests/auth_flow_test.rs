@@ -51,7 +51,10 @@ async fn test_mock_auth_provider() {
     let provider = MockAuthProvider;
 
     // Test successful auth with "mock" method
-    let result = provider.authenticate("mock", b"test-credentials").await.unwrap();
+    let result = provider
+        .authenticate("mock", b"test-credentials")
+        .await
+        .unwrap();
 
     match result {
         AuthResult::Success { session_id } => {
@@ -71,7 +74,10 @@ async fn test_mock_auth_provider_unsupported_method() {
     match result {
         AuthResult::Success { .. } => panic!("Expected failure"),
         AuthResult::Failure { error_message } => {
-            assert_eq!(error_message, "Unsupported authentication method: unsupported");
+            assert_eq!(
+                error_message,
+                "Unsupported authentication method: unsupported"
+            );
         }
     }
 }

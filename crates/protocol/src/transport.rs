@@ -4,8 +4,8 @@
 //! to work with different network protocols (WebSocket, TCP, QUIC, in-memory, etc.)
 //! while keeping the client and server event loops transport-agnostic.
 
-use crate::Envelope;
 use crate::compat::mpsc;
+use crate::Envelope;
 use async_trait::async_trait;
 
 /// Transport layer abstraction for network communication

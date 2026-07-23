@@ -22,13 +22,11 @@
 //! cargo run --example prediction_demo
 //! ```
 
+use mokosh_protocol::SessionId;
 use mokosh_protocol_derive::GameMessage;
 use mokosh_simulation::{
-    client_predictor::ClientPredictor,
-    server_simulation::ServerSimulation,
-    Simulation,
+    client_predictor::ClientPredictor, server_simulation::ServerSimulation, Simulation,
 };
-use mokosh_protocol::SessionId;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -165,12 +163,16 @@ fn main() {
     let session_id = SessionId::new_v4();
 
     println!("Initial state:");
-    println!("  Client position: ({:.2}, {:.2})",
+    println!(
+        "  Client position: ({:.2}, {:.2})",
         client_predictor.simulation().position.x,
-        client_predictor.simulation().position.y);
-    println!("  Server position: ({:.2}, {:.2})\n",
+        client_predictor.simulation().position.y
+    );
+    println!(
+        "  Server position: ({:.2}, {:.2})\n",
         server_simulation.simulation().position.x,
-        server_simulation.simulation().position.y);
+        server_simulation.simulation().position.y
+    );
 
     // ========================================================================
     // Frame 1: Client applies input immediately (prediction)
@@ -186,11 +188,16 @@ fn main() {
     let seq1 = client_predictor.apply_local_input(input1.clone(), 0.016);
     client_predictor.step(0.016);
 
-    println!("  Client predicts position: ({:.2}, {:.2}) [instant feedback!]",
+    println!(
+        "  Client predicts position: ({:.2}, {:.2}) [instant feedback!]",
         client_predictor.simulation().position.x,
-        client_predictor.simulation().position.y);
+        client_predictor.simulation().position.y
+    );
     println!("  Server hasn't received input yet (network delay)");
-    println!("  Pending inputs: {}", client_predictor.pending_input_count());
+    println!(
+        "  Pending inputs: {}",
+        client_predictor.pending_input_count()
+    );
 
     // ========================================================================
     // Frame 2: Server receives input (simulating network latency)
@@ -207,9 +214,10 @@ fn main() {
     server_simulation.step(0.016);
 
     let server_snapshot = server_simulation.snapshot();
-    println!("  Server authoritative position: ({:.2}, {:.2})",
-        server_snapshot.position.x,
-        server_snapshot.position.y);
+    println!(
+        "  Server authoritative position: ({:.2}, {:.2})",
+        server_snapshot.position.x, server_snapshot.position.y
+    );
 
     // Client reconciles with server
     println!("\n  Client reconciles with server snapshot...");
@@ -221,10 +229,15 @@ fn main() {
         println!("    No reconciliation needed (prediction was accurate!)");
     }
 
-    println!("  Client position after reconciliation: ({:.2}, {:.2})",
+    println!(
+        "  Client position after reconciliation: ({:.2}, {:.2})",
         client_predictor.simulation().position.x,
-        client_predictor.simulation().position.y);
-    println!("  Pending inputs: {}", client_predictor.pending_input_count());
+        client_predictor.simulation().position.y
+    );
+    println!(
+        "  Pending inputs: {}",
+        client_predictor.pending_input_count()
+    );
 
     // ========================================================================
     // Frame 3: Client applies another input (up+right)
@@ -233,18 +246,25 @@ fn main() {
     println!("\n--- Frame 3: Client applies second input (up+right, speed=10) ---");
 
     let input2 = MovementInput {
-        direction: Vec2::new(std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2), // 45 degrees (normalized)
+        direction: Vec2::new(
+            std::f32::consts::FRAC_1_SQRT_2,
+            std::f32::consts::FRAC_1_SQRT_2,
+        ), // 45 degrees (normalized)
         speed: 10.0,
     };
 
     let seq2 = client_predictor.apply_local_input(input2.clone(), 0.016);
     client_predictor.step(0.016);
 
-    println!("  Client predicts position: ({:.2}, {:.2})",
+    println!(
+        "  Client predicts position: ({:.2}, {:.2})",
         client_predictor.simulation().position.x,
-        client_predictor.simulation().position.y);
-    println!("  Pending inputs: {} (waiting for server confirmation)",
-        client_predictor.pending_input_count());
+        client_predictor.simulation().position.y
+    );
+    println!(
+        "  Pending inputs: {} (waiting for server confirmation)",
+        client_predictor.pending_input_count()
+    );
 
     // ========================================================================
     // Frame 4: Simulate divergence (server applies different input)
@@ -255,26 +275,34 @@ fn main() {
 
     // Server applies a slightly different input (simulating packet corruption or lag)
     let server_input2 = MovementInput {
-        direction: Vec2::new(std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2),
+        direction: Vec2::new(
+            std::f32::consts::FRAC_1_SQRT_2,
+            std::f32::consts::FRAC_1_SQRT_2,
+        ),
         speed: 8.0, // Different speed! (simulating server validation/correction)
     };
 
-    server_simulation.apply_client_input(session_id, seq2, server_input2, 0.016).unwrap();
+    server_simulation
+        .apply_client_input(session_id, seq2, server_input2, 0.016)
+        .unwrap();
     server_simulation.step(0.016);
 
     let server_snapshot2 = server_simulation.snapshot();
-    println!("  Server authoritative position: ({:.2}, {:.2})",
-        server_snapshot2.position.x,
-        server_snapshot2.position.y);
+    println!(
+        "  Server authoritative position: ({:.2}, {:.2})",
+        server_snapshot2.position.x, server_snapshot2.position.y
+    );
 
     println!("\n  Client reconciles with server snapshot...");
     let reconciled = client_predictor.reconcile_with_server(&server_snapshot2, seq2);
 
     if reconciled {
         println!("    Reconciliation performed! (divergence detected and corrected)");
-        println!("    Client corrected position: ({:.2}, {:.2})",
+        println!(
+            "    Client corrected position: ({:.2}, {:.2})",
             client_predictor.simulation().position.x,
-            client_predictor.simulation().position.y);
+            client_predictor.simulation().position.y
+        );
     } else {
         println!("    No reconciliation needed");
     }
@@ -296,17 +324,21 @@ fn main() {
         }
 
         if frame == 10 {
-            println!("  Frame {}: Client position: ({:.2}, {:.2}), velocity: ({:.2}, {:.2})",
+            println!(
+                "  Frame {}: Client position: ({:.2}, {:.2}), velocity: ({:.2}, {:.2})",
                 frame,
                 client_predictor.simulation().position.x,
                 client_predictor.simulation().position.y,
                 client_predictor.simulation().velocity.x,
-                client_predictor.simulation().velocity.y);
-            println!("           Server position: ({:.2}, {:.2}), velocity: ({:.2}, {:.2})",
+                client_predictor.simulation().velocity.y
+            );
+            println!(
+                "           Server position: ({:.2}, {:.2}), velocity: ({:.2}, {:.2})",
                 server_simulation.simulation().position.x,
                 server_simulation.simulation().position.y,
                 server_simulation.simulation().velocity.x,
-                server_simulation.simulation().velocity.y);
+                server_simulation.simulation().velocity.y
+            );
         }
     }
 
@@ -322,25 +354,29 @@ fn main() {
     println!("✓ Friction and physics work correctly on both sides\n");
 
     println!("Final positions:");
-    println!("  Client: ({:.2}, {:.2})",
+    println!(
+        "  Client: ({:.2}, {:.2})",
         client_predictor.simulation().position.x,
-        client_predictor.simulation().position.y);
-    println!("  Server: ({:.2}, {:.2})",
+        client_predictor.simulation().position.y
+    );
+    println!(
+        "  Server: ({:.2}, {:.2})",
         server_simulation.simulation().position.x,
-        server_simulation.simulation().position.y);
+        server_simulation.simulation().position.y
+    );
 
     // Calculate divergence
     let client_pos = client_predictor.simulation().position;
     let server_pos = server_simulation.simulation().position;
-    let divergence = Vec2::new(
-        client_pos.x - server_pos.x,
-        client_pos.y - server_pos.y,
-    );
+    let divergence = Vec2::new(client_pos.x - server_pos.x, client_pos.y - server_pos.y);
 
     if divergence.length_squared() < 0.001 {
         println!("\n✓ Client and server are in sync! (divergence < 0.001)\n");
     } else {
-        println!("\n⚠ Small divergence detected: ({:.4}, {:.4})", divergence.x, divergence.y);
+        println!(
+            "\n⚠ Small divergence detected: ({:.4}, {:.4})",
+            divergence.x, divergence.y
+        );
         println!("  (This is expected due to floating-point precision)\n");
     }
 }

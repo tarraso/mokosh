@@ -126,8 +126,8 @@ impl<T: Transport> Transport for ReliableLink<T> {
         // The shared bridge runs the reliability state machine below the loop.
         let bridge = Bridge::new(
             SinglePeer::new(&cfg),
-            app_in_tx,     // → app (event loop)
-            inner_out_tx,  // → network (wrapped transport)
+            app_in_tx,    // → app (event loop)
+            inner_out_tx, // → network (wrapped transport)
             &cfg,
             control_codec,
             retransmit_tick,

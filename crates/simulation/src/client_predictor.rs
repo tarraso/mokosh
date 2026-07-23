@@ -226,7 +226,8 @@ impl<S: Simulation> ClientPredictor<S> {
 
         // Replay all pending inputs from the confirmed point
         for pending in self.pending_inputs.pending() {
-            self.simulation.apply_input(&pending.input, pending.delta_time);
+            self.simulation
+                .apply_input(&pending.input, pending.delta_time);
         }
 
         true // Reconciliation performed

@@ -6,9 +6,7 @@
 use mokosh_protocol::SessionId;
 use mokosh_protocol_derive::GameMessage;
 use mokosh_simulation::{
-    client_predictor::ClientPredictor,
-    server_simulation::ServerSimulation,
-    Simulation,
+    client_predictor::ClientPredictor, server_simulation::ServerSimulation, Simulation,
 };
 use serde::{Deserialize, Serialize};
 
