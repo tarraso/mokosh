@@ -14,8 +14,6 @@ thiserror = { workspace = true }
 bytes = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
-async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-uuid = { workspace = true }
 tracing = { workspace = true }
