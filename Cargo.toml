@@ -60,38 +60,95 @@ wasm-bindgen-futures = "0.4"
 instant = { version = "0.1", features = ["wasm-bindgen"] }
 
 [[example]]
+name = "auth_demo"
+path = "examples/auth_demo.rs"
+required-features = ["native"]
+
+[[example]]
+name = "encryption_compression_demo"
+path = "examples/encryption_compression_demo.rs"
+required-features = ["native"]
+
+[[example]]
+name = "message_registry_demo"
+path = "examples/message_registry_demo.rs"
+required-features = ["native"]
+
+[[example]]
+name = "prediction_demo"
+path = "examples/prediction_demo.rs"
+required-features = ["native"]
+
+[[example]]
 name = "platformer_server"
 path = "examples/platformer/server.rs"
+required-features = ["native"]
 
 [[example]]
 name = "platformer_server_udp"
 path = "examples/platformer/server_udp.rs"
+required-features = ["native"]
 
 [[example]]
 name = "platformer_client_udp"
 path = "examples/platformer/client_udp.rs"
+required-features = ["native"]
 
 [[example]]
 name = "bevy_platformer_server"
 path = "examples/platformer_bevy/server.rs"
+required-features = ["native"]
 
 [[example]]
 name = "bevy_platformer_client"
 path = "examples/platformer_bevy/client.rs"
+required-features = ["native"]
 
 [[example]]
 name = "bevy_platformer_server_udp"
 path = "examples/platformer_bevy/server_udp.rs"
+required-features = ["native"]
 
 [[example]]
 name = "bevy_platformer_client_udp"
 path = "examples/platformer_bevy/client_udp.rs"
+required-features = ["native"]
 
 [[example]]
 name = "bevy_platformer_client_wasm"
 path = "examples/platformer_bevy/client_wasm.rs"
 crate-type = ["cdylib"]
 required-features = ["wasm"]
+
+[[test]]
+name = "auth_flow_test"
+path = "tests/auth_flow_test.rs"
+required-features = ["native"]
+
+[[test]]
+name = "encryption_compression_test"
+path = "tests/encryption_compression_test.rs"
+required-features = ["native"]
+
+[[test]]
+name = "message_registry_test"
+path = "tests/message_registry_test.rs"
+required-features = ["native"]
+
+[[test]]
+name = "reliability_test"
+path = "tests/reliability_test.rs"
+required-features = ["native"]
+
+[[test]]
+name = "simulation_test"
+path = "tests/simulation_test.rs"
+required-features = ["native"]
+
+[[test]]
+name = "udp_reliability_test"
+path = "tests/udp_reliability_test.rs"
+required-features = ["native"]
 
 [[bench]]
 name = "envelope_bench"

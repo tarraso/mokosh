@@ -49,6 +49,7 @@ jobs:
           - crate: mokosh
             features: ""
             name: "root: no features"
+            all_targets: true
           - crate: mokosh
             features: "native"
             name: "root: native"
@@ -111,17 +112,21 @@ jobs:
 
       - name: Check ${{ matrix.name }}
         run: |
+          check_args=""
+          if [ "${{ matrix.all_targets }}" = "true" ]; then
+            check_args="--all-targets"
+          fi
           if [ -z "${{ matrix.features }}" ]; then
             if [ -n "${{ matrix.target }}" ]; then
-              cargo check -p ${{ matrix.crate }} --no-default-features --target ${{ matrix.target }}
+              cargo check -p ${{ matrix.crate }} --no-default-features --target ${{ matrix.target }} $check_args
             else
-              cargo check -p ${{ matrix.crate }} --no-default-features
+              cargo check -p ${{ matrix.crate }} --no-default-features $check_args
             fi
           else
             if [ -n "${{ matrix.target }}" ]; then
-              cargo check -p ${{ matrix.crate }} --no-default-features --features "${{ matrix.features }}" --target ${{ matrix.target }}
+              cargo check -p ${{ matrix.crate }} --no-default-features --features "${{ matrix.features }}" --target ${{ matrix.target }} $check_args
             else
-              cargo check -p ${{ matrix.crate }} --no-default-features --features "${{ matrix.features }}"
+              cargo check -p ${{ matrix.crate }} --no-default-features --features "${{ matrix.features }}" $check_args
             fi
           fi
 
@@ -153,7 +158,7 @@ jobs:
           components: clippy
           targets: wasm32-unknown-unknown
 
-      - name: Clippy ${{ matrix.crate }} with features: ${{ matrix.features }}
+      - name: "Clippy ${{ matrix.crate }} with features: ${{ matrix.features }}"
         run: |
           if [ -z "${{ matrix.features }}" ]; then
             if [ -n "${{ matrix.target }}" ]; then

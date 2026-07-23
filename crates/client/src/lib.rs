@@ -1,3 +1,5 @@
+#![cfg_attr(not(any(feature = "native", feature = "wasm")), allow(dead_code))]
+
 //! # Mokosh Client
 //!
 //! Client-side event loop for Mokosh protocol.
@@ -5,6 +7,8 @@
 //! ## Example
 //!
 //! ```no_run
+//! # #[cfg(feature = "native")]
+//! # mod native {
 //! use mokosh_client::Client;
 //! use mokosh_client::mpsc;
 //!
@@ -16,6 +20,8 @@
 //!     let client = Client::new(incoming_rx, outgoing_tx);
 //!     client.run().await;
 //! }
+//! # }
+//! # fn main() {}
 //! ```
 
 mod compat;
@@ -24,22 +30,22 @@ pub mod transport;
 // Re-export compat for public API
 pub use compat::mpsc;
 
+use instant::{Duration, Instant};
 use mokosh_protocol::{
     compression::{Compressor, NoCompressor},
     encryption::{Encryptor, NoEncryptor},
     messages::{
-        routes, AuthRequest, AuthResponse, Disconnect, DisconnectReason, Hello, HelloError, HelloOk,
-        Ping, Pong, GAME_MESSAGES_START,
+        routes, AuthRequest, AuthResponse, Disconnect, DisconnectReason, Hello, HelloError,
+        HelloOk, Ping, Pong, GAME_MESSAGES_START,
     },
     reliability::{ExpiredMessage, ReliabilityConfig, ReliabilityMode},
     CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageDropped, MessageRegistry,
     CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
-use instant::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// Import SinkExt for futures::mpsc::Sender::send() when using futures (WASM)
-#[cfg(feature = "wasm")]
+// Import SinkExt whenever compat uses futures channels (WASM or featureless).
+#[cfg(not(all(feature = "native", not(feature = "wasm"))))]
 use futures::SinkExt;
 
 /// Client configuration
@@ -379,7 +385,10 @@ where
                 ttl,
             } => {
                 let ttl = ttl.unwrap_or_else(|| self.default_reliable_ttl());
-                if let Err(e) = self.send_encoded(route_id, schema_hash, payload, mode, ttl).await {
+                if let Err(e) = self
+                    .send_encoded(route_id, schema_hash, payload, mode, ttl)
+                    .await
+                {
                     tracing::warn!(route_id, error = %e, "Failed to send game message via handle");
                 }
             }
@@ -419,7 +428,8 @@ where
             reliability: self.config.reliability.is_some(),
         };
 
-        self.send_reliable_control_message(routes::HELLO, &hello).await?;
+        self.send_reliable_control_message(routes::HELLO, &hello)
+            .await?;
 
         // Transition from Connecting to HelloSent
         self.state
@@ -456,6 +466,8 @@ where
     /// # Example
     ///
     /// ```no_run
+    /// # #[cfg(feature = "native")]
+    /// # mod native {
     /// # use mokosh_client::{Client, mpsc};
     /// # #[tokio::main]
     /// # async fn main() {
@@ -466,6 +478,8 @@ where
     ///     println!("Current RTT: {}ms", rtt.as_millis());
     /// }
     /// # }
+    /// # }
+    /// # fn main() {}
     /// ```
     pub fn get_last_rtt(&self) -> Option<Duration> {
         self.last_rtt
@@ -950,6 +964,8 @@ where
     /// # Example
     ///
     /// ```no_run
+    /// # #[cfg(feature = "native")]
+    /// # mod native {
     /// use mokosh_client::Client;
     /// use mokosh_protocol::GameMessage;
     /// use serde::{Serialize, Deserialize};
@@ -975,6 +991,8 @@ where
     ///     // Type-safe send - route_id and schema_hash are automatic!
     ///     client.send_message(PlayerInput { x: 10.0, y: 20.0 }).await.unwrap();
     /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     ///
     /// # Type Safety
@@ -1194,7 +1212,7 @@ pub enum ClientError {
     DecryptionError(String),
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native", not(feature = "wasm")))]
 mod tests {
     use super::*;
     use bytes::Bytes;
@@ -1257,5 +1275,36 @@ mod tests {
         drop(incoming_tx);
 
         handle.await.unwrap();
+    }
+}
+
+#[cfg(all(test, not(any(feature = "native", feature = "wasm"))))]
+mod featureless_tests {
+    use super::*;
+    use bytes::Bytes;
+    use futures::{executor::block_on, StreamExt};
+    use mokosh_protocol::EnvelopeFlags;
+
+    #[test]
+    fn test_featureless_client_send() {
+        block_on(async {
+            let (_incoming_tx, incoming_rx) = mpsc::channel(1);
+            let (outgoing_tx, mut outgoing_rx) = mpsc::channel(1);
+            let mut client = Client::new(incoming_rx, outgoing_tx);
+            let envelope = Envelope::new_simple(
+                1,
+                1,
+                0,
+                100,
+                1,
+                EnvelopeFlags::RELIABLE,
+                Bytes::from_static(b"featureless"),
+            );
+
+            client.send(envelope.clone()).await.unwrap();
+
+            let received = outgoing_rx.next().await.unwrap();
+            assert_eq!(received, envelope);
+        });
     }
 }

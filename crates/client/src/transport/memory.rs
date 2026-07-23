@@ -7,9 +7,9 @@
 //! - Development and debugging
 
 use super::Transport;
+use crate::compat::mpsc;
 use async_trait::async_trait;
 use mokosh_protocol::Envelope;
-use crate::compat::mpsc;
 
 /// In-memory client transport that communicates via channels
 ///
@@ -19,6 +19,8 @@ use crate::compat::mpsc;
 /// # Example
 ///
 /// ```no_run
+/// # #[cfg(feature = "native")]
+/// # fn native_example() {
 /// use mokosh_client::transport::memory::MemoryTransport;
 /// use tokio::sync::mpsc;
 ///
@@ -26,6 +28,8 @@ use crate::compat::mpsc;
 /// let (from_peer_tx, from_peer_rx) = mpsc::channel(100);
 ///
 /// let transport = MemoryTransport::new(to_peer_tx, from_peer_rx);
+/// # }
+/// # fn main() {}
 /// ```
 pub struct MemoryTransport {
     /// Channel to send envelopes to the peer
@@ -160,7 +164,7 @@ pub enum MemoryTransportError {
     ChannelClosed,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native", not(feature = "wasm")))]
 mod tests {
     use super::*;
     use bytes::Bytes;
