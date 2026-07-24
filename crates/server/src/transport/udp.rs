@@ -3,10 +3,11 @@
 //! An alternative to the WebSocket transport for latency-sensitive games.
 //!
 //! UDP is connectionless, so this transport synthesizes "sessions" from the
-//! peer's [`SocketAddr`]: the first valid HELLO seen from a new address is
-//! treated as a new connection and assigned a fresh [`SessionId`]. Subsequent
-//! datagrams from the same address reuse that session id. Outgoing envelopes
-//! are routed back to the peer via a reverse `SessionId -> SocketAddr` map.
+//! peer's [`SocketAddr`]. Before allocating a [`SessionId`], an unknown peer
+//! must echo a short-lived stateless cookie bound to its IP, port, and original
+//! HELLO. Subsequent datagrams from the validated address reuse that session
+//! id. Outgoing envelopes are routed back to the peer via a reverse
+//! `SessionId -> SocketAddr` map.
 //!
 //! # Caveats
 //! - **No delivery guarantees.** UDP is unreliable and unordered. Reliability,
@@ -16,6 +17,9 @@
 //!   payloads below the path MTU (~1200 bytes is a safe practical limit) to
 //!   avoid IP fragmentation; the receive buffer caps an inbound datagram at
 //!   64 KiB.
+//! - **Address validation.** The cookie exchange is mandatory and adds one RTT
+//!   to a new UDP connection. Custom clients must implement the validation
+//!   routes; Mokosh's `UdpClient` handles them automatically.
 //! - **Session cleanup.** Since there is no connection-close event, the
 //!   address/session mapping is removed when a DISCONNECT envelope flows in
 //!   either direction. The server's keepalive/timeout logic emits an outbound
@@ -23,7 +27,10 @@
 
 use bytes::Bytes;
 use mokosh_protocol::messages::routes;
-use mokosh_protocol::{Envelope, SessionEnvelope, SessionId};
+use mokosh_protocol::{
+    Envelope, EnvelopeFlags, SessionEnvelope, SessionId, UdpAddressChallenge, UdpAddressResponse,
+    UDP_ADDRESS_COOKIE_SIZE,
+};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -37,11 +44,34 @@ const MAX_DATAGRAM_SIZE: usize = 65_535;
 /// How often the bounded source table is scanned for idle buckets.
 const SOURCE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Maximum response/input byte ratio before a UDP address is validated.
+const MAX_UNVALIDATED_AMPLIFICATION: usize = 3;
+
+/// Current format of the opaque address-validation cookie.
+const ADDRESS_COOKIE_VERSION: u8 = 1;
+
+/// Domain separation for the keyed cookie authenticator.
+const ADDRESS_COOKIE_DOMAIN: &[u8] = b"mokosh-udp-address-cookie-v1";
+
+/// Configuration for the mandatory UDP return-path validation exchange.
+#[derive(Debug, Clone)]
+pub struct UdpAddressValidationConfig {
+    pub cookie_lifetime: Duration,
+}
+
+impl Default for UdpAddressValidationConfig {
+    fn default() -> Self {
+        Self {
+            cookie_lifetime: Duration::from_secs(10),
+        }
+    }
+}
+
 /// Per-source admission limit for new UDP sessions.
 ///
-/// The limiter is enabled by default by [`UdpServer::new`]. Each accepted HELLO
-/// from an address without an existing session consumes one token. Existing
-/// sessions do not consume tokens.
+/// The limiter is enabled by default by [`UdpServer::new`]. Each valid
+/// address-response from an endpoint without an existing session consumes one
+/// token. Unvalidated HELLOs and existing sessions do not consume tokens.
 #[derive(Debug, Clone)]
 pub struct UdpSessionRateLimitConfig {
     /// Steady-state number of new sessions allowed per second per source.
@@ -162,6 +192,98 @@ fn source_network(ip: IpAddr) -> IpAddr {
     }
 }
 
+struct AddressCookieSigner {
+    secret: [u8; 32],
+    lifetime: Duration,
+    started_at: Instant,
+}
+
+impl AddressCookieSigner {
+    fn new(secret: [u8; 32], lifetime: Duration, started_at: Instant) -> Self {
+        Self {
+            secret,
+            lifetime,
+            started_at,
+        }
+    }
+
+    fn issue(
+        &self,
+        peer_addr: SocketAddr,
+        hello: &Envelope,
+        now: Instant,
+    ) -> [u8; UDP_ADDRESS_COOKIE_SIZE] {
+        let issued_at_ms = self.elapsed_millis(now);
+        let tag = self.tag(peer_addr, hello, issued_at_ms);
+        let mut cookie = [0u8; UDP_ADDRESS_COOKIE_SIZE];
+        cookie[0] = ADDRESS_COOKIE_VERSION;
+        cookie[1..9].copy_from_slice(&issued_at_ms.to_be_bytes());
+        cookie[9..].copy_from_slice(tag.as_bytes());
+        cookie
+    }
+
+    fn validate(
+        &self,
+        cookie: &[u8; UDP_ADDRESS_COOKIE_SIZE],
+        peer_addr: SocketAddr,
+        hello: &Envelope,
+        now: Instant,
+    ) -> bool {
+        if cookie[0] != ADDRESS_COOKIE_VERSION {
+            return false;
+        }
+
+        let issued_at_ms = u64::from_be_bytes(cookie[1..9].try_into().expect("fixed cookie"));
+        let now_ms = self.elapsed_millis(now);
+        if issued_at_ms > now_ms
+            || now_ms.saturating_sub(issued_at_ms) > duration_millis(self.lifetime)
+        {
+            return false;
+        }
+
+        self.tag(peer_addr, hello, issued_at_ms) == cookie[9..]
+    }
+
+    fn elapsed_millis(&self, now: Instant) -> u64 {
+        duration_millis(now.saturating_duration_since(self.started_at))
+    }
+
+    fn tag(&self, peer_addr: SocketAddr, hello: &Envelope, issued_at_ms: u64) -> blake3::Hash {
+        let mut hasher = blake3::Hasher::new_keyed(&self.secret);
+        hasher.update(ADDRESS_COOKIE_DOMAIN);
+        match normalized_endpoint(peer_addr) {
+            SocketAddr::V4(addr) => {
+                hasher.update(&[4]);
+                hasher.update(&addr.ip().octets());
+                hasher.update(&addr.port().to_be_bytes());
+            }
+            SocketAddr::V6(addr) => {
+                hasher.update(&[6]);
+                hasher.update(&addr.ip().octets());
+                hasher.update(&addr.port().to_be_bytes());
+            }
+        }
+        hasher.update(&issued_at_ms.to_be_bytes());
+        hasher.update(&hello.to_bytes());
+        hasher.finalize()
+    }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn normalized_endpoint(addr: SocketAddr) -> SocketAddr {
+    match addr {
+        SocketAddr::V6(addr) => addr
+            .ip()
+            .to_ipv4_mapped()
+            .map(|ip| SocketAddr::new(IpAddr::V4(ip), addr.port()))
+            .unwrap_or(SocketAddr::V6(addr)),
+        other => other,
+    }
+}
+
 /// UDP server that accepts datagrams and bridges them to envelope channels.
 ///
 /// Mirrors the API of [`WebSocketServer`](super::websocket::WebSocketServer):
@@ -169,6 +291,7 @@ fn source_network(ip: IpAddr) -> IpAddr {
 pub struct UdpServer {
     addr: SocketAddr,
     session_rate_limit: UdpSessionRateLimitConfig,
+    address_validation: UdpAddressValidationConfig,
 }
 
 impl UdpServer {
@@ -178,12 +301,19 @@ impl UdpServer {
         Self {
             addr,
             session_rate_limit: UdpSessionRateLimitConfig::default(),
+            address_validation: UdpAddressValidationConfig::default(),
         }
     }
 
     /// Overrides the per-source admission limit for new UDP sessions.
     pub fn with_session_rate_limit(mut self, config: UdpSessionRateLimitConfig) -> Self {
         self.session_rate_limit = config;
+        self
+    }
+
+    /// Overrides the mandatory UDP address-validation cookie lifetime.
+    pub fn with_address_validation(mut self, config: UdpAddressValidationConfig) -> Self {
+        self.address_validation = config;
         self
     }
 
@@ -204,6 +334,15 @@ impl UdpServer {
         mut outgoing_rx: mpsc::Receiver<SessionEnvelope>,
         ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> Result<(), UdpServerError> {
+        let mut cookie_secret = [0u8; 32];
+        getrandom::getrandom(&mut cookie_secret)
+            .map_err(|e| UdpServerError::RandomnessError(e.to_string()))?;
+        let cookie_signer = AddressCookieSigner::new(
+            cookie_secret,
+            self.address_validation.cookie_lifetime,
+            Instant::now(),
+        );
+
         let socket = UdpSocket::bind(self.addr)
             .await
             .map_err(|e| UdpServerError::BindError(e.to_string()))?;
@@ -237,16 +376,96 @@ impl UdpServer {
                                 }
                             };
 
+                            // Transport-only validation messages never reach the
+                            // protocol/reliability layers for an existing peer.
+                            if addr_to_session.contains_key(&peer_addr)
+                                && matches!(
+                                    envelope.route_id,
+                                    routes::UDP_ADDRESS_CHALLENGE | routes::UDP_ADDRESS_RESPONSE
+                                )
+                            {
+                                continue;
+                            }
+
                             // Existing peers bypass admission limiting. Unknown
-                            // peers may create state only with an allowed HELLO.
-                            let session_id = if let Some(&session_id) = addr_to_session.get(&peer_addr) {
-                                session_id
+                            // peers must echo a stateless cookie before any
+                            // SessionId, routing map, limiter bucket, or
+                            // reliability state is allocated.
+                            let (session_id, envelope) = if let Some(&session_id) = addr_to_session.get(&peer_addr) {
+                                (session_id, envelope)
                             } else {
-                                if envelope.route_id != routes::HELLO {
+                                if envelope.route_id == routes::HELLO {
+                                    let cookie =
+                                        cookie_signer.issue(peer_addr, &envelope, Instant::now());
+                                    let challenge = UdpAddressChallenge { cookie };
+                                    let challenge_envelope = Envelope::new_simple(
+                                        envelope.protocol_version,
+                                        3,
+                                        0,
+                                        routes::UDP_ADDRESS_CHALLENGE,
+                                        0,
+                                        EnvelopeFlags::empty(),
+                                        challenge.to_bytes(),
+                                    );
+                                    let challenge_bytes = challenge_envelope.to_bytes();
+                                    if challenge_bytes.len()
+                                        <= len.saturating_mul(MAX_UNVALIDATED_AMPLIFICATION)
+                                    {
+                                        if let Err(e) = socket.send_to(&challenge_bytes, peer_addr).await {
+                                            tracing::error!(
+                                                peer = %peer_addr,
+                                                error = %e,
+                                                "Failed to send UDP address challenge"
+                                            );
+                                        }
+                                    } else {
+                                        tracing::warn!(
+                                            peer = %peer_addr,
+                                            received_bytes = len,
+                                            challenge_bytes = challenge_bytes.len(),
+                                            "Dropping UDP address challenge: amplification budget exceeded"
+                                        );
+                                    }
+                                    continue;
+                                }
+
+                                if envelope.route_id != routes::UDP_ADDRESS_RESPONSE {
                                     tracing::debug!(
                                         peer = %peer_addr,
                                         route_id = envelope.route_id,
-                                        "Dropping non-HELLO from unknown UDP peer"
+                                        "Dropping non-validation message from unknown UDP peer"
+                                    );
+                                    continue;
+                                }
+
+                                let response = match UdpAddressResponse::from_bytes(&envelope.payload) {
+                                    Ok(response) if response.hello.route_id == routes::HELLO => response,
+                                    Ok(_) => {
+                                        tracing::debug!(
+                                            peer = %peer_addr,
+                                            "Dropping UDP address response without HELLO"
+                                        );
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            peer = %peer_addr,
+                                            error = %e,
+                                            "Dropping malformed UDP address response"
+                                        );
+                                        continue;
+                                    }
+                                };
+
+                                if !cookie_signer.validate(
+                                    &response.cookie,
+                                    peer_addr,
+                                    &response.hello,
+                                    Instant::now(),
+                                ) {
+                                    tracing::debug!(
+                                        peer = %peer_addr,
+                                        "Dropping invalid UDP address cookie"
                                     );
                                     continue;
                                 }
@@ -267,7 +486,7 @@ impl UdpServer {
                                     session = %session_id,
                                     "New UDP connection"
                                 );
-                                session_id
+                                (session_id, response.hello)
                             };
 
                             let is_disconnect = envelope.route_id == routes::DISCONNECT;
@@ -338,12 +557,15 @@ pub enum UdpServerError {
 
     #[error("Socket error: {0}")]
     SocketError(String),
+
+    #[error("Failed to generate UDP address-validation secret: {0}")]
+    RandomnessError(String),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mokosh_protocol::EnvelopeFlags;
+    use mokosh_protocol::{EnvelopeFlags, UdpAddressResponse};
     use tokio::time::timeout;
 
     fn test_envelope(route_id: u16, msg_id: u64, payload: &'static [u8]) -> Envelope {
@@ -407,11 +629,72 @@ mod tests {
         client: &UdpSocket,
         incoming_rx: &mut mpsc::Receiver<SessionEnvelope>,
     ) -> SessionEnvelope {
-        client.send(&hello_envelope().to_bytes()).await.unwrap();
+        let hello = hello_envelope();
+        let challenge = request_challenge(client, &hello).await;
+        send_address_response(client, challenge.cookie, hello).await;
         timeout(Duration::from_secs(1), incoming_rx.recv())
             .await
             .unwrap()
             .unwrap()
+    }
+
+    async fn request_challenge(client: &UdpSocket, hello: &Envelope) -> UdpAddressChallenge {
+        client.send(&hello.to_bytes()).await.unwrap();
+        let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
+        let len = timeout(Duration::from_secs(1), client.recv(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        let envelope = Envelope::from_bytes(Bytes::copy_from_slice(&buf[..len])).unwrap();
+        assert_eq!(envelope.route_id, routes::UDP_ADDRESS_CHALLENGE);
+        UdpAddressChallenge::from_bytes(&envelope.payload).unwrap()
+    }
+
+    async fn send_address_response(
+        client: &UdpSocket,
+        cookie: [u8; UDP_ADDRESS_COOKIE_SIZE],
+        hello: Envelope,
+    ) {
+        let protocol_version = hello.protocol_version;
+        let response = UdpAddressResponse { cookie, hello };
+        let envelope = Envelope::new_simple(
+            protocol_version,
+            3,
+            0,
+            routes::UDP_ADDRESS_RESPONSE,
+            0,
+            EnvelopeFlags::empty(),
+            response.to_bytes(),
+        );
+        client.send(&envelope.to_bytes()).await.unwrap();
+    }
+
+    #[test]
+    fn address_cookie_is_bound_to_endpoint_hello_and_lifetime() {
+        let start = Instant::now();
+        let signer = AddressCookieSigner::new([7; 32], Duration::from_secs(10), start);
+        let addr: SocketAddr = "192.0.2.10:1234".parse().unwrap();
+        let other_port: SocketAddr = "192.0.2.10:1235".parse().unwrap();
+        let other_ip: SocketAddr = "192.0.2.11:1234".parse().unwrap();
+        let hello = hello_envelope();
+        let changed_hello = test_envelope(routes::HELLO, 2, b"{}");
+        let cookie = signer.issue(addr, &hello, start + Duration::from_secs(1));
+
+        assert!(signer.validate(&cookie, addr, &hello, start + Duration::from_secs(5)));
+        assert!(!signer.validate(&cookie, other_port, &hello, start + Duration::from_secs(5)));
+        assert!(!signer.validate(&cookie, other_ip, &hello, start + Duration::from_secs(5)));
+        assert!(!signer.validate(
+            &cookie,
+            addr,
+            &changed_hello,
+            start + Duration::from_secs(5)
+        ));
+        assert!(!signer.validate(&cookie, addr, &hello, start + Duration::from_secs(12)));
+        assert!(!signer.validate(&cookie, addr, &hello, start));
+
+        let mut corrupted = cookie;
+        corrupted[UDP_ADDRESS_COOKIE_SIZE - 1] ^= 1;
+        assert!(!signer.validate(&corrupted, addr, &hello, start + Duration::from_secs(5)));
     }
 
     #[tokio::test]
@@ -422,6 +705,47 @@ mod tests {
 
         assert!(!session_envelope.session_id.is_nil());
         assert_eq!(session_envelope.envelope.route_id, routes::HELLO);
+    }
+
+    #[tokio::test]
+    async fn first_hello_only_receives_bounded_challenge() {
+        let (server_addr, mut incoming_rx, _outgoing_tx) = spawn_server().await;
+        let client = connect_client(server_addr).await;
+        let hello = hello_envelope();
+        let hello_bytes = hello.to_bytes();
+
+        client.send(&hello_bytes).await.unwrap();
+        let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
+        let len = timeout(Duration::from_secs(1), client.recv(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        let challenge = Envelope::from_bytes(Bytes::copy_from_slice(&buf[..len])).unwrap();
+
+        assert_eq!(challenge.route_id, routes::UDP_ADDRESS_CHALLENGE);
+        assert!(len <= hello_bytes.len() * MAX_UNVALIDATED_AMPLIFICATION);
+        assert!(timeout(Duration::from_millis(100), incoming_rx.recv())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn cookie_captured_by_another_port_cannot_create_session() {
+        let (server_addr, mut incoming_rx, _outgoing_tx) = spawn_server().await;
+        let first = connect_client(server_addr).await;
+        let second = connect_client(server_addr).await;
+        let hello = hello_envelope();
+        let challenge = request_challenge(&first, &hello).await;
+
+        send_address_response(&second, challenge.cookie, hello).await;
+
+        assert!(timeout(Duration::from_millis(100), incoming_rx.recv())
+            .await
+            .is_err());
+        let mut buf = [0u8; MAX_DATAGRAM_SIZE];
+        assert!(timeout(Duration::from_millis(100), second.recv(&mut buf))
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -494,12 +818,7 @@ mod tests {
         // Too short to be an envelope header.
         client.send(&[1, 2, 3]).await.unwrap();
         // Followed by a valid HELLO.
-        client.send(&hello_envelope().to_bytes()).await.unwrap();
-
-        let session_envelope = timeout(Duration::from_secs(1), incoming_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let session_envelope = establish(&client, &mut incoming_rx).await;
         assert_eq!(session_envelope.envelope.route_id, routes::HELLO);
     }
 
@@ -579,7 +898,9 @@ mod tests {
         let second = connect_client(server_addr).await;
 
         let established = establish(&first, &mut incoming_rx).await;
-        second.send(&hello_envelope().to_bytes()).await.unwrap();
+        let second_hello = hello_envelope();
+        let challenge = request_challenge(&second, &second_hello).await;
+        send_address_response(&second, challenge.cookie, second_hello).await;
         assert!(timeout(Duration::from_millis(100), incoming_rx.recv())
             .await
             .is_err());
@@ -619,6 +940,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unvalidated_challenges_do_not_consume_admission_tokens() {
+        let config = UdpSessionRateLimitConfig {
+            max_new_sessions_per_second: 0,
+            burst: 1,
+            ..Default::default()
+        };
+        let (server_addr, mut incoming_rx, _outgoing_tx) = spawn_server_with_config(config).await;
+
+        for _ in 0..8 {
+            let client = connect_client(server_addr).await;
+            let _ = request_challenge(&client, &hello_envelope()).await;
+        }
+
+        let legitimate = connect_client(server_addr).await;
+        let established = establish(&legitimate, &mut incoming_rx).await;
+        assert_eq!(established.envelope.route_id, routes::HELLO);
+    }
+
+    #[tokio::test]
     async fn source_can_create_session_after_token_refill() {
         let config = UdpSessionRateLimitConfig {
             max_new_sessions_per_second: 10,
@@ -644,11 +984,7 @@ mod tests {
 
         let second = connect_client(server_addr).await;
         tokio::time::sleep(Duration::from_millis(120)).await;
-        second.send(&hello_envelope().to_bytes()).await.unwrap();
-        let reconnected = timeout(Duration::from_secs(1), incoming_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let reconnected = establish(&second, &mut incoming_rx).await;
         assert_ne!(reconnected.session_id, first_session);
     }
 }

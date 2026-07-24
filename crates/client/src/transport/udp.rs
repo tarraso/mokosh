@@ -6,7 +6,9 @@
 //!
 //! The client binds an ephemeral local UDP socket and `connect`s it to the
 //! server address so that `send`/`recv` talk only to that peer. Each envelope
-//! is transmitted as a single datagram.
+//! is transmitted as a single datagram. Address-validation challenges are
+//! answered inside this transport, transparently to the client event loop and
+//! reliability decorator.
 //!
 //! # Caveats
 //! - **No delivery guarantees.** UDP is unreliable and unordered; reliability
@@ -18,7 +20,8 @@ use super::Transport;
 use crate::compat::mpsc;
 use async_trait::async_trait;
 use bytes::Bytes;
-use mokosh_protocol::Envelope;
+use mokosh_protocol::messages::routes;
+use mokosh_protocol::{Envelope, EnvelopeFlags, UdpAddressChallenge, UdpAddressResponse};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 
@@ -70,6 +73,7 @@ impl Transport for UdpClient {
 
         let socket = Arc::new(socket);
         let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
+        let mut pending_hello: Option<Envelope> = None;
 
         loop {
             tokio::select! {
@@ -78,6 +82,56 @@ impl Transport for UdpClient {
                         Ok(len) => {
                             match Envelope::from_bytes(Bytes::copy_from_slice(&buf[..len])) {
                                 Ok(envelope) => {
+                                    if envelope.route_id == routes::UDP_ADDRESS_CHALLENGE {
+                                        let Some(hello) = pending_hello.clone() else {
+                                            tracing::debug!(
+                                                "Ignoring UDP address challenge without a pending HELLO"
+                                            );
+                                            continue;
+                                        };
+                                        let challenge =
+                                            match UdpAddressChallenge::from_bytes(&envelope.payload) {
+                                                Ok(challenge) => challenge,
+                                                Err(e) => {
+                                                    tracing::debug!(
+                                                        error = %e,
+                                                        "Ignoring malformed UDP address challenge"
+                                                    );
+                                                    continue;
+                                                }
+                                            };
+                                        let response = UdpAddressResponse {
+                                            cookie: challenge.cookie,
+                                            hello: hello.clone(),
+                                        };
+                                        let response_envelope = Envelope::new_simple(
+                                            hello.protocol_version,
+                                            3,
+                                            0,
+                                            routes::UDP_ADDRESS_RESPONSE,
+                                            0,
+                                            EnvelopeFlags::empty(),
+                                            response.to_bytes(),
+                                        );
+                                        if let Err(e) = socket.send(&response_envelope.to_bytes()).await {
+                                            tracing::error!(
+                                                error = %e,
+                                                "Failed to send UDP address response"
+                                            );
+                                            break;
+                                        }
+                                        continue;
+                                    }
+
+                                    if matches!(
+                                        envelope.route_id,
+                                        routes::HELLO_OK
+                                            | routes::HELLO_ERROR
+                                            | routes::DISCONNECT
+                                    ) {
+                                        pending_hello = None;
+                                    }
+
                                     if incoming_tx.send(envelope).await.is_err() {
                                         tracing::error!("Failed to send envelope to event loop");
                                         break;
@@ -96,6 +150,19 @@ impl Transport for UdpClient {
                 }
 
                 Some(envelope) = outgoing_rx.recv() => {
+                    if envelope.route_id == routes::HELLO {
+                        pending_hello = Some(envelope.clone());
+                    } else if matches!(
+                        envelope.route_id,
+                        routes::UDP_ADDRESS_CHALLENGE | routes::UDP_ADDRESS_RESPONSE
+                    ) {
+                        tracing::debug!(
+                            route_id = envelope.route_id,
+                            "Dropping application-supplied UDP validation message"
+                        );
+                        continue;
+                    }
+
                     let bytes = envelope.to_bytes();
                     if let Err(e) = socket.send(&bytes).await {
                         tracing::error!(error = %e, "Failed to send datagram");

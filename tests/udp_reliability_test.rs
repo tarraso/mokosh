@@ -17,7 +17,7 @@ use mokosh_protocol::messages::{
 };
 use mokosh_protocol::{
     CodecType, Envelope, EnvelopeFlags, ReliabilityConfig, ReliabilityMode, SessionEnvelope,
-    SessionId, CURRENT_PROTOCOL_VERSION,
+    SessionId, UdpAddressChallenge, UdpAddressResponse, CURRENT_PROTOCOL_VERSION,
 };
 use mokosh_protocol_derive::GameMessage;
 use mokosh_server::transport::udp::{UdpServer, UdpSessionRateLimitConfig};
@@ -235,6 +235,32 @@ async fn recv_route(socket: &UdpSocket, route_id: u16, wait: Duration) -> Envelo
             return envelope;
         }
     }
+}
+
+async fn send_validated_hello(socket: &UdpSocket) {
+    let hello = reliable_hello();
+    socket.send(&hello.to_bytes()).await.unwrap();
+    let challenge = recv_route(
+        socket,
+        routes::UDP_ADDRESS_CHALLENGE,
+        Duration::from_secs(1),
+    )
+    .await;
+    let challenge = UdpAddressChallenge::from_bytes(&challenge.payload).unwrap();
+    let response = UdpAddressResponse {
+        cookie: challenge.cookie,
+        hello,
+    };
+    let response = Envelope::new_simple(
+        CURRENT_PROTOCOL_VERSION,
+        3,
+        0,
+        routes::UDP_ADDRESS_RESPONSE,
+        0,
+        EnvelopeFlags::empty(),
+        response.to_bytes(),
+    );
+    socket.send(&response.to_bytes()).await.unwrap();
 }
 
 async fn assert_route_absent(socket: &UdpSocket, route_id: u16, wait: Duration) {
@@ -547,7 +573,7 @@ async fn udp_connection_timeout_reclaims_transport_and_reliability_session() {
 
     let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     client.connect(harness.server_addr).await.unwrap();
-    client.send(&reliable_hello().to_bytes()).await.unwrap();
+    send_validated_hello(&client).await;
 
     let old_session = recv_connected(&mut harness.event_rx, "initial HELLO").await;
     let _hello_ok = recv_route(&client, routes::HELLO_OK, Duration::from_secs(1)).await;
@@ -574,7 +600,7 @@ async fn udp_connection_timeout_reclaims_transport_and_reliability_session() {
 
     // The same SocketAddr must mint a new UDP SessionId. Reusing reliable
     // control sequence 1 must be accepted by a fresh reliability pipe.
-    client.send(&reliable_hello().to_bytes()).await.unwrap();
+    send_validated_hello(&client).await;
     let new_session = recv_connected(&mut harness.event_rx, "reconnect after timeout").await;
     assert_ne!(new_session, old_session);
     let _hello_ok = recv_route(&client, routes::HELLO_OK, Duration::from_secs(1)).await;
@@ -595,14 +621,14 @@ async fn udp_session_limit_rejects_and_releases_transport_state() {
 
     let first = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     first.connect(harness.server_addr).await.unwrap();
-    first.send(&reliable_hello().to_bytes()).await.unwrap();
+    send_validated_hello(&first).await;
 
     let first_session = recv_connected(&mut harness.event_rx, "first connection").await;
     let _hello_ok = recv_route(&first, routes::HELLO_OK, Duration::from_secs(1)).await;
 
     let rejected = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     rejected.connect(harness.server_addr).await.unwrap();
-    rejected.send(&reliable_hello().to_bytes()).await.unwrap();
+    send_validated_hello(&rejected).await;
 
     let hello_error = recv_route(&rejected, routes::HELLO_ERROR, Duration::from_secs(1)).await;
     let hello_error: HelloError = serde_json::from_slice(&hello_error.payload).unwrap();
@@ -640,7 +666,7 @@ async fn udp_session_limit_rejects_and_releases_transport_state() {
 
     // The rejection DISCONNECT must have removed this peer from both the UDP
     // routing maps and the reliability peer set, so control sequence 1 is fresh.
-    rejected.send(&reliable_hello().to_bytes()).await.unwrap();
+    send_validated_hello(&rejected).await;
     let admitted_session =
         recv_connected(&mut harness.event_rx, "reconnect after capacity release").await;
     assert_ne!(admitted_session, first_session);
@@ -667,7 +693,7 @@ async fn udp_per_ip_session_creation_flood_is_limited() {
     for index in 0..BURST {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         socket.connect(harness.server_addr).await.unwrap();
-        socket.send(&reliable_hello().to_bytes()).await.unwrap();
+        send_validated_hello(&socket).await;
         let session_id = recv_connected(
             &mut harness.event_rx,
             &format!("accepted burst client {index}"),
@@ -682,7 +708,7 @@ async fn udp_per_ip_session_creation_flood_is_limited() {
     for _ in 0..FLOOD_CLIENTS {
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         socket.connect(harness.server_addr).await.unwrap();
-        socket.send(&reliable_hello().to_bytes()).await.unwrap();
+        send_validated_hello(&socket).await;
         flood.push(socket);
     }
 

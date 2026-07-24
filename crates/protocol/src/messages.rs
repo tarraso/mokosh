@@ -45,6 +45,14 @@ pub mod routes {
     /// decorator into the incoming stream so the event loop can surface it
     /// (`GameEvent::MessageDropped` / client `dropped_tx`). Never sent on the wire.
     pub const MESSAGE_DROPPED: u16 = 41;
+
+    /// UDP transport challenge used to validate a peer's return path before
+    /// allocating a session. Handled below the protocol event loops.
+    pub const UDP_ADDRESS_CHALLENGE: u16 = 42;
+
+    /// UDP transport response that echoes an address-validation cookie and the
+    /// original HELLO. Handled below the protocol event loops.
+    pub const UDP_ADDRESS_RESPONSE: u16 = 43;
 }
 
 /// Reliability channel identifiers carried in an [`Ack`].

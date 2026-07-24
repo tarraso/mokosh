@@ -53,6 +53,7 @@ pub mod messages;
 pub mod reliability;
 pub mod state;
 pub mod transport;
+pub mod udp_validation;
 pub mod version;
 
 pub use codec_registry::CodecType;
@@ -71,6 +72,7 @@ pub use reliability::{
 };
 pub use state::ConnectionState;
 pub use transport::Transport;
+pub use udp_validation::{UdpAddressChallenge, UdpAddressResponse, UDP_ADDRESS_COOKIE_SIZE};
 pub use version::{negotiate_version, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION};
 
 /// Session identifier for routing envelopes to specific clients
