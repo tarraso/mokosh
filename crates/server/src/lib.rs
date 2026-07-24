@@ -115,6 +115,11 @@ impl SessionState {
 /// Server configuration
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
+    /// Maximum number of concurrent sessions, including sessions that have not
+    /// completed the HELLO handshake. New sessions are rejected once the limit
+    /// is reached. A value of 0 rejects all new sessions.
+    pub max_concurrent_sessions: usize,
+
     /// Timeout for HELLO handshake
     pub hello_timeout: Duration,
 
@@ -151,6 +156,7 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            max_concurrent_sessions: 1024,
             hello_timeout: Duration::from_secs(5),
             keepalive_interval: Duration::from_secs(30),
             connection_timeout: Duration::from_secs(60),
@@ -666,6 +672,22 @@ where
         // Get or create session state for this client
         // New clients start in Connecting state
         if !self.sessions.contains_key(&session_id) {
+            // A late transport-level teardown notification must not recreate a
+            // session that the server has already removed.
+            if envelope.route_id == routes::DISCONNECT {
+                tracing::debug!(
+                    session = %session_id,
+                    "Ignoring DISCONNECT for unknown session"
+                );
+                return Ok(());
+            }
+
+            if self.sessions.len() >= self.config.max_concurrent_sessions {
+                self.reject_session_at_capacity(session_id, envelope.route_id)
+                    .await?;
+                return Ok(());
+            }
+
             tracing::info!(session = %session_id, "New client session created");
             self.sessions.insert(
                 session_id,
@@ -696,6 +718,48 @@ where
         } else {
             self.handle_game_message(session_id, envelope).await
         }
+    }
+
+    /// Rejects an unknown session when the admission limit is full.
+    ///
+    /// HELLO receives the protocol-level `ServerFull` response. DISCONNECT is
+    /// always sent afterwards so transport and reliability decorators can
+    /// release any state they created before the envelope reached the server.
+    async fn reject_session_at_capacity(
+        &mut self,
+        session_id: SessionId,
+        route_id: u16,
+    ) -> Result<(), ServerError> {
+        tracing::warn!(
+            session = %session_id,
+            route_id,
+            active_sessions = self.sessions.len(),
+            max_concurrent_sessions = self.config.max_concurrent_sessions,
+            "Rejecting new session: server is full"
+        );
+
+        let hello_result = if route_id == routes::HELLO {
+            let hello_error = HelloError {
+                reason: ErrorReason::ServerFull,
+                message: "Server connection limit reached".to_string(),
+                expected_schema_hash: 0,
+            };
+            self.send_control_message(session_id, routes::HELLO_ERROR, &hello_error)
+                .await
+        } else {
+            Ok(())
+        };
+
+        let disconnect = Disconnect {
+            reason: DisconnectReason::Overloaded,
+            message: "Server connection limit reached".to_string(),
+        };
+        let disconnect_result = self
+            .send_control_message(session_id, routes::DISCONNECT, &disconnect)
+            .await;
+
+        hello_result?;
+        disconnect_result
     }
 
     /// Handles control messages (route_id < 100)
@@ -1781,6 +1845,24 @@ mod tests {
         SessionEnvelope::new(session_id, envelope)
     }
 
+    fn create_disconnect_envelope(session_id: SessionId) -> SessionEnvelope {
+        let disconnect = Disconnect {
+            reason: DisconnectReason::ClientRequested,
+            message: "test disconnect".to_string(),
+        };
+        let payload = serde_json::to_vec(&disconnect).unwrap();
+        let envelope = Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            1,
+            0,
+            routes::DISCONNECT,
+            0,
+            EnvelopeFlags::RELIABLE,
+            Bytes::from(payload),
+        );
+        SessionEnvelope::new(session_id, envelope)
+    }
+
     #[tokio::test]
     async fn test_server_new() {
         let (_incoming_tx, incoming_rx) = mpsc::channel(10);
@@ -1791,6 +1873,11 @@ mod tests {
         // Server should start with no connected clients
         assert_eq!(server.client_count(), 0);
         assert!(server.get_active_sessions().is_empty());
+    }
+
+    #[test]
+    fn default_session_limit_is_bounded() {
+        assert_eq!(ServerConfig::default().max_concurrent_sessions, 1024);
     }
 
     #[tokio::test]
@@ -1810,6 +1897,140 @@ mod tests {
         // Should emit PlayerConnected event
         assert!(matches!(event, Some(GameEvent::PlayerConnected(_))));
         assert_eq!(server.client_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn session_limit_rejects_new_client_and_reuses_released_slot() {
+        let (incoming_tx, incoming_rx) = mpsc::channel(10);
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(10);
+        let config = ServerConfig {
+            max_concurrent_sessions: 1,
+            ..Default::default()
+        };
+        let mut server = Server::with_full_config(
+            incoming_rx,
+            outgoing_tx,
+            CodecType::from_id(1).unwrap(),
+            CodecType::from_id(1).unwrap(),
+            config,
+            None,
+            None,
+            NoCompressor,
+            NoEncryptor,
+        );
+
+        let first = SessionId::new_v4();
+        incoming_tx
+            .send(create_hello_envelope(first))
+            .await
+            .unwrap();
+        assert!(matches!(
+            server.tick().await.unwrap(),
+            Some(GameEvent::PlayerConnected(session_id)) if session_id == first
+        ));
+        assert_eq!(
+            outgoing_rx.recv().await.unwrap().envelope.route_id,
+            routes::HELLO_OK
+        );
+
+        let rejected = SessionId::new_v4();
+        incoming_tx
+            .send(create_hello_envelope(rejected))
+            .await
+            .unwrap();
+        assert!(server.tick().await.unwrap().is_none());
+
+        let hello_error = outgoing_rx.recv().await.unwrap();
+        assert_eq!(hello_error.session_id, rejected);
+        assert_eq!(hello_error.envelope.route_id, routes::HELLO_ERROR);
+        let hello_error: HelloError = CodecType::from_id(1)
+            .unwrap()
+            .decode(&hello_error.envelope.payload)
+            .unwrap();
+        assert_eq!(hello_error.reason, ErrorReason::ServerFull);
+
+        let disconnect = outgoing_rx.recv().await.unwrap();
+        assert_eq!(disconnect.session_id, rejected);
+        assert_eq!(disconnect.envelope.route_id, routes::DISCONNECT);
+        let disconnect: Disconnect = CodecType::from_id(1)
+            .unwrap()
+            .decode(&disconnect.envelope.payload)
+            .unwrap();
+        assert_eq!(disconnect.reason, DisconnectReason::Overloaded);
+        assert_eq!(server.client_count(), 1);
+        assert!(server.get_session_state(rejected).is_none());
+
+        incoming_tx
+            .send(create_disconnect_envelope(first))
+            .await
+            .unwrap();
+        assert!(matches!(
+            server.tick().await.unwrap(),
+            Some(GameEvent::PlayerDisconnected(session_id)) if session_id == first
+        ));
+        assert_eq!(server.client_count(), 0);
+
+        incoming_tx
+            .send(create_hello_envelope(rejected))
+            .await
+            .unwrap();
+        assert!(matches!(
+            server.tick().await.unwrap(),
+            Some(GameEvent::PlayerConnected(session_id)) if session_id == rejected
+        ));
+        assert_eq!(server.client_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn connecting_session_occupies_slot_and_unknown_disconnect_is_ignored() {
+        let (incoming_tx, incoming_rx) = mpsc::channel(10);
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(10);
+        let config = ServerConfig {
+            max_concurrent_sessions: 1,
+            ..Default::default()
+        };
+        let mut server = Server::with_full_config(
+            incoming_rx,
+            outgoing_tx,
+            CodecType::from_id(1).unwrap(),
+            CodecType::from_id(1).unwrap(),
+            config,
+            None,
+            None,
+            NoCompressor,
+            NoEncryptor,
+        );
+
+        let connecting = SessionId::new_v4();
+        server.sessions.insert(
+            connecting,
+            SessionState::new(CodecType::from_id(1).unwrap(), 150),
+        );
+
+        let rejected = SessionId::new_v4();
+        incoming_tx
+            .send(create_hello_envelope(rejected))
+            .await
+            .unwrap();
+        assert!(server.tick().await.unwrap().is_none());
+        assert_eq!(server.client_count(), 1);
+        assert_eq!(
+            outgoing_rx.recv().await.unwrap().envelope.route_id,
+            routes::HELLO_ERROR
+        );
+        assert_eq!(
+            outgoing_rx.recv().await.unwrap().envelope.route_id,
+            routes::DISCONNECT
+        );
+
+        let unknown = SessionId::new_v4();
+        incoming_tx
+            .send(create_disconnect_envelope(unknown))
+            .await
+            .unwrap();
+        assert!(server.tick().await.unwrap().is_none());
+        assert_eq!(server.client_count(), 1);
+        assert!(outgoing_rx.try_recv().is_err());
     }
 
     #[tokio::test]

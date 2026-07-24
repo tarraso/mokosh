@@ -80,9 +80,18 @@ async fn handle_connection(
             // Handle outgoing messages to WebSocket client
             Some(envelope) = outgoing_rx.recv() => {
                 use futures::SinkExt;
+                let is_disconnect = envelope.route_id == mokosh_protocol::messages::routes::DISCONNECT;
                 let bytes = envelope.to_bytes();
                 if let Err(e) = ws_sender.send(Message::Binary(bytes.to_vec())).await {
                     tracing::error!(peer = %peer_addr, error = %e, "Failed to send to WebSocket client");
+                    break;
+                }
+                if is_disconnect {
+                    tracing::debug!(
+                        peer = %peer_addr,
+                        session = %session_id,
+                        "Closing connection after server DISCONNECT"
+                    );
                     break;
                 }
             }

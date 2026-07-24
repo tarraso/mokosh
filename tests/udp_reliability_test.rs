@@ -12,7 +12,9 @@ use mokosh_client::transport::{ReliableLink, Transport};
 use mokosh_client::{Client, ClientConfig};
 use mokosh_protocol::compression::NoCompressor;
 use mokosh_protocol::encryption::NoEncryptor;
-use mokosh_protocol::messages::{routes, Disconnect, DisconnectReason, Hello};
+use mokosh_protocol::messages::{
+    routes, Disconnect, DisconnectReason, ErrorReason, Hello, HelloError,
+};
 use mokosh_protocol::{
     CodecType, Envelope, EnvelopeFlags, ReliabilityConfig, ReliabilityMode, SessionEnvelope,
     CURRENT_PROTOCOL_VERSION,
@@ -68,6 +70,22 @@ fn reliable_hello() -> Envelope {
         1,
         ReliabilityMode::ReliableOrdered.to_flags(),
         serde_json::to_vec(&hello).unwrap().into(),
+    )
+}
+
+fn reliable_disconnect() -> Envelope {
+    let disconnect = Disconnect {
+        reason: DisconnectReason::ClientRequested,
+        message: "test disconnect".to_string(),
+    };
+    Envelope::new_simple(
+        CURRENT_PROTOCOL_VERSION,
+        1,
+        0,
+        routes::DISCONNECT,
+        2,
+        ReliabilityMode::ReliableOrdered.to_flags(),
+        serde_json::to_vec(&disconnect).unwrap().into(),
     )
 }
 
@@ -505,6 +523,119 @@ async fn udp_connection_timeout_reclaims_transport_and_reliability_session() {
     };
     assert_ne!(new_session, old_session);
     let _hello_ok = recv_route(&client, routes::HELLO_OK, Duration::from_secs(1)).await;
+
+    server_task.abort();
+    transport_task.abort();
+}
+
+#[tokio::test]
+async fn udp_session_limit_rejects_and_releases_transport_state() {
+    let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let server_addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let (t_in_tx, t_in_rx) = mpsc::channel(256);
+    let (t_out_tx, t_out_rx) = mpsc::channel(256);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+    let transport_task = tokio::spawn(async move {
+        let _ = UdpServer::new(server_addr)
+            .run(t_in_tx, t_out_rx, Some(ready_tx))
+            .await;
+    });
+    ready_rx.await.expect("UDP server failed to start");
+
+    let reliability = fast_reliability();
+    let (srv_in_rx, srv_out_tx) = ReliableServerLink::new(reliability.clone())
+        .with_tick(Duration::from_millis(10))
+        .spawn(t_in_rx, t_out_tx);
+    let server_cfg = ServerConfig {
+        max_concurrent_sessions: 1,
+        reliability: Some(reliability),
+        ..Default::default()
+    };
+    let mut server = Server::with_full_config(
+        srv_in_rx,
+        srv_out_tx,
+        json(),
+        json(),
+        server_cfg,
+        None,
+        None,
+        NoCompressor,
+        NoEncryptor,
+    );
+
+    let (event_tx, mut event_rx) = mpsc::channel(16);
+    let server_task = tokio::spawn(async move {
+        loop {
+            match server.tick().await {
+                Ok(Some(event)) => {
+                    if event_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+    });
+
+    let first = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    first.connect(server_addr).await.unwrap();
+    first.send(&reliable_hello().to_bytes()).await.unwrap();
+
+    let first_session = loop {
+        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .expect("first connection timed out")
+            .expect("server event channel closed")
+        {
+            GameEvent::PlayerConnected(session_id) => break session_id,
+            _ => continue,
+        }
+    };
+    let _hello_ok = recv_route(&first, routes::HELLO_OK, Duration::from_secs(1)).await;
+
+    let rejected = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    rejected.connect(server_addr).await.unwrap();
+    rejected.send(&reliable_hello().to_bytes()).await.unwrap();
+
+    let hello_error = recv_route(&rejected, routes::HELLO_ERROR, Duration::from_secs(1)).await;
+    let hello_error: HelloError = serde_json::from_slice(&hello_error.payload).unwrap();
+    assert_eq!(hello_error.reason, ErrorReason::ServerFull);
+    let disconnect = recv_route(&rejected, routes::DISCONNECT, Duration::from_secs(1)).await;
+    let disconnect: Disconnect = serde_json::from_slice(&disconnect.payload).unwrap();
+    assert_eq!(disconnect.reason, DisconnectReason::Overloaded);
+
+    first.send(&reliable_disconnect().to_bytes()).await.unwrap();
+    let disconnected_session = loop {
+        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .expect("first disconnect timed out")
+            .expect("server event channel closed")
+        {
+            GameEvent::PlayerDisconnected(session_id) => break session_id,
+            _ => continue,
+        }
+    };
+    assert_eq!(disconnected_session, first_session);
+
+    // The rejection DISCONNECT must have removed this peer from both the UDP
+    // routing maps and the reliability peer set, so control sequence 1 is fresh.
+    rejected.send(&reliable_hello().to_bytes()).await.unwrap();
+    let admitted_session = loop {
+        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .expect("reconnect after capacity release timed out")
+            .expect("server event channel closed")
+        {
+            GameEvent::PlayerConnected(session_id) => break session_id,
+            _ => continue,
+        }
+    };
+    assert_ne!(admitted_session, first_session);
+    let _hello_ok = recv_route(&rejected, routes::HELLO_OK, Duration::from_secs(1)).await;
 
     server_task.abort();
     transport_task.abort();
