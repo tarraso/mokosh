@@ -222,6 +222,18 @@ mod tests {
         )
     }
 
+    fn disconnect_env() -> Envelope {
+        Envelope::new_simple(
+            CURRENT_PROTOCOL_VERSION,
+            1,
+            0,
+            routes::DISCONNECT,
+            0,
+            ReliabilityMode::Reliable.to_flags(),
+            Bytes::from_static(b"{}"),
+        )
+    }
+
     #[tokio::test]
     async fn demuxes_two_sessions_independently() {
         let (t_in_tx, t_in_rx) = mpsc::channel(64);
@@ -317,5 +329,63 @@ mod tests {
             saw_disconnect,
             "window overflow should inject a DISCONNECT to the server"
         );
+    }
+
+    #[tokio::test]
+    async fn server_disconnect_bypasses_full_window_and_resets_session() {
+        let cfg = ReliabilityConfig {
+            send_window: 1,
+            ..fast_cfg()
+        };
+        let (t_in_tx, t_in_rx) = mpsc::channel(64);
+        let (t_out_tx, mut t_out_rx) = mpsc::channel(64);
+        let (mut server_in_rx, server_out_tx) = ReliableServerLink::new(cfg)
+            .with_tick(TDuration::from_millis(10))
+            .spawn(t_in_rx, t_out_tx);
+
+        let sid = SessionId::new_v4();
+        t_in_tx
+            .send(SessionEnvelope::new(sid, hello_env()))
+            .await
+            .unwrap();
+        let _ = timeout(TDuration::from_secs(1), server_in_rx.recv())
+            .await
+            .unwrap();
+
+        // Fill the game-channel send window and leave the message unacknowledged.
+        server_out_tx
+            .send(SessionEnvelope::new(sid, game_env()))
+            .await
+            .unwrap();
+        let first_game = timeout(TDuration::from_secs(1), t_out_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first_game.envelope.route_id, 300);
+        assert_eq!(first_game.envelope.msg_id, 1);
+
+        // Teardown must still reach the transport despite the full window.
+        server_out_tx
+            .send(SessionEnvelope::new(sid, disconnect_env()))
+            .await
+            .unwrap();
+        let disconnect = timeout(TDuration::from_secs(1), t_out_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(disconnect.envelope.route_id, routes::DISCONNECT);
+
+        // A later send for the same key creates a fresh pipe. Sequence 1 proves
+        // the old per-session reliability state was removed.
+        server_out_tx
+            .send(SessionEnvelope::new(sid, game_env()))
+            .await
+            .unwrap();
+        let fresh_game = timeout(TDuration::from_secs(1), t_out_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fresh_game.envelope.route_id, 300);
+        assert_eq!(fresh_game.envelope.msg_id, 1);
     }
 }

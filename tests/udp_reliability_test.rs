@@ -12,7 +12,11 @@ use mokosh_client::transport::{ReliableLink, Transport};
 use mokosh_client::{Client, ClientConfig};
 use mokosh_protocol::compression::NoCompressor;
 use mokosh_protocol::encryption::NoEncryptor;
-use mokosh_protocol::{CodecType, ReliabilityConfig, ReliabilityMode};
+use mokosh_protocol::messages::{routes, Disconnect, DisconnectReason, Hello};
+use mokosh_protocol::{
+    CodecType, Envelope, EnvelopeFlags, ReliabilityConfig, ReliabilityMode, SessionEnvelope,
+    CURRENT_PROTOCOL_VERSION,
+};
 use mokosh_protocol_derive::GameMessage;
 use mokosh_server::transport::udp::UdpServer;
 use mokosh_server::transport::ReliableServerLink;
@@ -46,6 +50,73 @@ fn fast_reliability() -> ReliabilityConfig {
 
 fn json() -> CodecType {
     CodecType::from_id(1).unwrap()
+}
+
+fn reliable_hello() -> Envelope {
+    let hello = Hello {
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        min_protocol_version: 1,
+        codec_id: 1,
+        schema_hash: 0,
+        reliability: true,
+    };
+    Envelope::new_simple(
+        CURRENT_PROTOCOL_VERSION,
+        1,
+        0,
+        routes::HELLO,
+        1,
+        ReliabilityMode::ReliableOrdered.to_flags(),
+        serde_json::to_vec(&hello).unwrap().into(),
+    )
+}
+
+fn probe_envelope(route_id: u16) -> Envelope {
+    Envelope::new_simple(
+        CURRENT_PROTOCOL_VERSION,
+        1,
+        0,
+        route_id,
+        0,
+        EnvelopeFlags::empty(),
+        Vec::new().into(),
+    )
+}
+
+async fn recv_route(socket: &UdpSocket, route_id: u16, wait: Duration) -> Envelope {
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut buf = vec![0u8; 65_535];
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let len = tokio::time::timeout(remaining, socket.recv(&mut buf))
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for route {route_id}"))
+            .unwrap();
+        let envelope = Envelope::from_bytes(bytes::Bytes::copy_from_slice(&buf[..len])).unwrap();
+        if envelope.route_id == route_id {
+            return envelope;
+        }
+    }
+}
+
+async fn assert_route_absent(socket: &UdpSocket, route_id: u16, wait: Duration) {
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut buf = vec![0u8; 65_535];
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, socket.recv(&mut buf)).await {
+            Ok(Ok(len)) => {
+                let envelope =
+                    Envelope::from_bytes(bytes::Bytes::copy_from_slice(&buf[..len])).unwrap();
+                assert_ne!(
+                    envelope.route_id, route_id,
+                    "stale session still routed envelope to its old UDP peer"
+                );
+            }
+            Ok(Err(e)) => panic!("UDP receive failed: {e}"),
+            Err(_) => return,
+        }
+    }
 }
 
 /// Server reliably sends ordered messages to a client over real UDP loopback;
@@ -313,4 +384,128 @@ async fn udp_client_handle_reliable_to_server() {
         (1..=N).collect::<Vec<_>>(),
         "messages sent via ClientHandle must reach the server reliably, in order, exactly once"
     );
+}
+
+#[tokio::test]
+async fn udp_connection_timeout_reclaims_transport_and_reliability_session() {
+    let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let server_addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let (t_in_tx, t_in_rx) = mpsc::channel(256);
+    let (t_out_tx, t_out_rx) = mpsc::channel(256);
+    let transport_probe_tx = t_out_tx.clone();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+    let transport_task = tokio::spawn(async move {
+        let _ = UdpServer::new(server_addr)
+            .run(t_in_tx, t_out_rx, Some(ready_tx))
+            .await;
+    });
+    ready_rx.await.expect("UDP server failed to start");
+
+    // Keep HELLO_OK unacknowledged in a one-message window. Timeout teardown
+    // must bypass that full reliability window.
+    let reliability = ReliabilityConfig {
+        send_window: 1,
+        ..fast_reliability()
+    };
+    let (srv_in_rx, srv_out_tx) = ReliableServerLink::new(reliability.clone())
+        .with_tick(Duration::from_millis(10))
+        .spawn(t_in_rx, t_out_tx);
+    let server_cfg = ServerConfig {
+        reliability: Some(reliability),
+        connection_timeout: Duration::from_millis(50),
+        keepalive_interval: Duration::from_secs(30),
+        ..Default::default()
+    };
+    let mut server = Server::with_full_config(
+        srv_in_rx,
+        srv_out_tx,
+        json(),
+        json(),
+        server_cfg,
+        None,
+        None,
+        NoCompressor,
+        NoEncryptor,
+    );
+
+    let (event_tx, mut event_rx) = mpsc::channel(16);
+    let server_task = tokio::spawn(async move {
+        loop {
+            match server.tick().await {
+                Ok(Some(event)) => {
+                    if event_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+    });
+
+    let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    client.connect(server_addr).await.unwrap();
+    client.send(&reliable_hello().to_bytes()).await.unwrap();
+
+    let old_session = loop {
+        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .expect("initial HELLO event timed out")
+            .expect("server event channel closed")
+        {
+            GameEvent::PlayerConnected(session_id) => break session_id,
+            _ => continue,
+        }
+    };
+    let _hello_ok = recv_route(&client, routes::HELLO_OK, Duration::from_secs(1)).await;
+
+    let disconnected_session = loop {
+        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .expect("connection timeout event timed out")
+            .expect("server event channel closed")
+        {
+            GameEvent::PlayerDisconnected(session_id) => break session_id,
+            _ => continue,
+        }
+    };
+    assert_eq!(disconnected_session, old_session);
+
+    let disconnect = recv_route(&client, routes::DISCONNECT, Duration::from_secs(1)).await;
+    let disconnect: Disconnect = serde_json::from_slice(&disconnect.payload).unwrap();
+    assert_eq!(disconnect.reason, DisconnectReason::Timeout);
+
+    // Probe the transport directly. If session_to_addr leaked, this route would
+    // still be delivered to the old peer.
+    const STALE_PROBE_ROUTE: u16 = 321;
+    transport_probe_tx
+        .send(SessionEnvelope::new(
+            old_session,
+            probe_envelope(STALE_PROBE_ROUTE),
+        ))
+        .await
+        .unwrap();
+    assert_route_absent(&client, STALE_PROBE_ROUTE, Duration::from_millis(150)).await;
+
+    // The same SocketAddr must mint a new UDP SessionId. Reusing reliable
+    // control sequence 1 must be accepted by a fresh reliability pipe.
+    client.send(&reliable_hello().to_bytes()).await.unwrap();
+    let new_session = loop {
+        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .expect("reconnect HELLO event timed out")
+            .expect("server event channel closed")
+        {
+            GameEvent::PlayerConnected(session_id) => break session_id,
+            _ => continue,
+        }
+    };
+    assert_ne!(new_session, old_session);
+    let _hello_ok = recv_route(&client, routes::HELLO_OK, Duration::from_secs(1)).await;
+
+    server_task.abort();
+    transport_task.abort();
 }

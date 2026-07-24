@@ -564,7 +564,7 @@ where
     /// Handles periodic tasks: timeouts and keepalive for all sessions
     async fn handle_periodic_tasks(&mut self) -> Result<(), ServerError> {
         let now = Instant::now();
-        let mut sessions_to_remove = Vec::new();
+        let mut sessions_to_remove: Vec<(SessionId, String)> = Vec::new();
         let mut sessions_to_ping = Vec::new();
 
         // Iterate over all sessions to check timeouts
@@ -574,7 +574,7 @@ where
                 && now.duration_since(session_state.last_received) > self.config.hello_timeout
             {
                 tracing::error!(session = %session_id, "HELLO handshake timeout");
-                sessions_to_remove.push(*session_id);
+                sessions_to_remove.push((*session_id, "HELLO handshake timeout".to_string()));
                 continue;
             }
 
@@ -583,7 +583,10 @@ where
                 if now.duration_since(session_state.last_received) > self.config.connection_timeout
                 {
                     tracing::error!(session = %session_id, "Connection timeout - no messages received");
-                    sessions_to_remove.push(*session_id);
+                    sessions_to_remove.push((
+                        *session_id,
+                        "Connection timeout - no messages received".to_string(),
+                    ));
                     continue;
                 }
 
@@ -599,19 +602,34 @@ where
         for session_id in sessions_to_ping {
             if let Err(e) = self.send_ping(session_id).await {
                 tracing::error!(session = %session_id, error = %e, "Failed to send PING");
-                sessions_to_remove.push(session_id);
+                sessions_to_remove.push((session_id, format!("Keepalive PING failed: {e}")));
             }
         }
 
-        // Remove timed-out sessions and send disconnect events
-        for session_id in sessions_to_remove {
-            self.sessions.remove(&session_id);
-            tracing::info!(session = %session_id, "Session removed due to timeout");
+        for (session_id, message) in sessions_to_remove {
+            let disconnect = Disconnect {
+                reason: DisconnectReason::Timeout,
+                message,
+            };
+            if let Err(e) = self
+                .send_control_message(session_id, routes::DISCONNECT, &disconnect)
+                .await
+            {
+                // The event loop still owns its cleanup even if the downstream
+                // channel is already closed.
+                tracing::error!(
+                    session = %session_id,
+                    error = %e,
+                    "Failed to send timeout DISCONNECT"
+                );
+            }
 
-            // Notify application of player disconnection
-            let _ = self
-                .event_tx
-                .send(GameEvent::PlayerDisconnected(session_id));
+            if self.sessions.remove(&session_id).is_some() {
+                tracing::info!(session = %session_id, "Session removed due to timeout");
+                let _ = self
+                    .event_tx
+                    .send(GameEvent::PlayerDisconnected(session_id));
+            }
         }
 
         Ok(())
@@ -1968,7 +1986,7 @@ mod tests {
     #[tokio::test]
     async fn test_server_hello_timeout() {
         let (_incoming_tx, incoming_rx) = mpsc::channel(10);
-        let (outgoing_tx, _outgoing_rx) = mpsc::channel(10);
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(10);
 
         // Create config with very short HELLO timeout
         let config = ServerConfig {
@@ -2001,10 +2019,24 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1100)).await;
 
         // Process periodic tasks (should remove timed-out session)
-        let _ = server.tick().await;
+        let event = server.tick().await.unwrap();
 
         // Session should be removed due to HELLO timeout
         assert_eq!(server.client_count(), 0);
+        assert!(matches!(
+            event,
+            Some(GameEvent::PlayerDisconnected(sid)) if sid == session_id
+        ));
+
+        // Timeout cleanup must flow down to transport/reliability layers.
+        let session_envelope = outgoing_rx.try_recv().expect("timeout DISCONNECT");
+        assert_eq!(session_envelope.session_id, session_id);
+        assert_eq!(session_envelope.envelope.route_id, routes::DISCONNECT);
+        let disconnect: Disconnect = CodecType::from_id(1)
+            .unwrap()
+            .decode(&session_envelope.envelope.payload)
+            .unwrap();
+        assert_eq!(disconnect.reason, DisconnectReason::Timeout);
     }
 
     #[tokio::test]

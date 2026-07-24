@@ -18,8 +18,8 @@
 //!   64 KiB.
 //! - **Session cleanup.** Since there is no connection-close event, the
 //!   address/session mapping is removed when a DISCONNECT envelope flows in
-//!   either direction. Dead peers are otherwise reaped by the server's own
-//!   keepalive/timeout logic at the protocol layer.
+//!   either direction. The server's keepalive/timeout logic emits an outbound
+//!   DISCONNECT so dead peers are also reaped from these transport maps.
 
 use bytes::Bytes;
 use mokosh_protocol::messages::routes;

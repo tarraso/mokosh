@@ -133,6 +133,13 @@ impl<P: PeerSet> Bridge<P> {
         let now = now_ms(self.epoch);
         let mode = ReliabilityMode::from_flags(env.flags);
         let is_disconnect = env.route_id == routes::DISCONNECT;
+
+        if is_disconnect {
+            let _ = self.net_out_tx.send(P::join(key, env)).await;
+            self.peers.remove(key);
+            return;
+        }
+
         match self
             .peers
             .pipe_mut(key)
@@ -140,9 +147,6 @@ impl<P: PeerSet> Bridge<P> {
         {
             Ok(()) => {
                 let _ = self.net_out_tx.send(P::join(key, env)).await;
-                if is_disconnect {
-                    self.peers.remove(key);
-                }
             }
             Err(WindowFull) => {
                 let d = disconnect_envelope(
