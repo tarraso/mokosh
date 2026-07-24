@@ -66,14 +66,6 @@ pub struct ClientPredictor<S: Simulation> {
 
     /// Last confirmed sequence number from server
     last_confirmed_sequence: u32,
-
-    /// Divergence threshold for reconciliation (squared distance)
-    ///
-    /// If predicted state diverges from server state by more than this threshold,
-    /// reconciliation is triggered. Set to 0.0 to always reconcile, or increase
-    /// for tolerance of minor floating-point drift.
-    #[allow(dead_code)] // Reserved for future custom divergence detection
-    divergence_threshold: f32,
 }
 
 impl<S: Simulation> ClientPredictor<S> {
@@ -83,7 +75,7 @@ impl<S: Simulation> ClientPredictor<S> {
     ///
     /// - `simulation`: Initial simulation state
     pub fn new(simulation: S) -> Self {
-        Self::with_config(simulation, 60, 0.01)
+        Self::with_config(simulation, 60)
     }
 
     /// Creates a new client predictor with custom configuration
@@ -92,18 +84,12 @@ impl<S: Simulation> ClientPredictor<S> {
     ///
     /// - `simulation`: Initial simulation state
     /// - `max_pending_inputs`: Maximum number of buffered inputs (default: 60)
-    /// - `divergence_threshold`: Reconciliation threshold (default: 0.01)
-    pub fn with_config(
-        simulation: S,
-        max_pending_inputs: usize,
-        divergence_threshold: f32,
-    ) -> Self {
+    pub fn with_config(simulation: S, max_pending_inputs: usize) -> Self {
         Self {
             simulation,
             pending_inputs: InputBuffer::new(max_pending_inputs),
             next_sequence: 1,
             last_confirmed_sequence: 0,
-            divergence_threshold,
         }
     }
 
@@ -253,10 +239,6 @@ impl<S: Simulation> ClientPredictor<S> {
         // For now, use a simple approach: serialize and compare bytes
         // In a real implementation, you'd compare specific fields with thresholds
         //
-        // Example for position-based games:
-        // let pos_diff = (predicted.position - authoritative.position).length_squared();
-        // pos_diff > self.divergence_threshold
-
         // Simple byte comparison for MVP
         use mokosh_protocol::CodecType;
         let codec = CodecType::from_id(2).unwrap(); // Postcard for compact comparison

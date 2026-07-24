@@ -14,7 +14,6 @@ serde_json = { workspace = true }
 bytes = { workspace = true }
 mokosh-protocol = { path = "../protocol" }
 mokosh-client = { path = "../client" }
-mokosh-server = { path = "../server" }
 tokio = { workspace = true }
 
 [dev-dependencies]

@@ -64,7 +64,7 @@ Mokosh is organized as a Rust workspace with seven crates:
 - **`mokosh-server`** - Authoritative server with multi-client support
 - **`mokosh-client`** - Client event loop with WebSocket (native) and BrowserWebSocket (WASM)
 - **`mokosh-simulation`** - Shared simulation layer for client/server (WASM-compatible)
-- **`mokosh-godot-bindings`** - Godot 4 GDExtension (NetClient/NetServer)
+- **`mokosh-godot-bindings`** - Godot 4 client GDExtension (`NetClient`)
 - **`mokosh-examples-shared`** - Shared game logic for examples (WASM-compatible)
 
 ### Protocol Design

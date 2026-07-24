@@ -24,17 +24,13 @@ const WINDOW_HEIGHT: u32 = 600;
 // ============================================================================
 
 #[derive(Component)]
-pub struct PlayerEntity {
-    pub session_id: String,
-}
+pub struct PlayerEntity;
 
 #[derive(Component)]
 pub struct LocalPlayerMarker;
 
 #[derive(Component)]
-pub struct BoxEntity {
-    pub box_id: u32,
-}
+pub struct BoxEntity;
 
 #[derive(Component)]
 struct GroundLine;
@@ -43,19 +39,10 @@ struct GroundLine;
 // Resources
 // ============================================================================
 
-#[derive(Resource)]
+#[derive(Default, Resource)]
 pub struct GameEntities {
     pub players: HashMap<String, Entity>,
     pub boxes: HashMap<u32, Entity>,
-}
-
-impl Default for GameEntities {
-    fn default() -> Self {
-        Self {
-            players: HashMap::new(),
-            boxes: HashMap::new(),
-        }
-    }
 }
 
 #[derive(Resource)]

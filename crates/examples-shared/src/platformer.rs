@@ -37,11 +37,6 @@ impl Vec2 {
     pub fn zero() -> Self {
         Self { x: 0.0, y: 0.0 }
     }
-
-    #[allow(dead_code)]
-    pub fn length_squared(&self) -> f32 {
-        self.x * self.x + self.y * self.y
-    }
 }
 
 impl std::ops::Add for Vec2 {
@@ -166,8 +161,6 @@ pub struct PhysicsBox {
     pub position: Vec2,
     pub velocity: Vec2,
     pub on_ground: bool,
-    #[allow(dead_code)]
-    pub mass: f32,
 }
 
 // ============================================================================
@@ -225,7 +218,6 @@ impl PlatformerSimulation {
             position,
             velocity: Vec2::zero(),
             on_ground: false,
-            mass: 1.0,
         });
     }
 

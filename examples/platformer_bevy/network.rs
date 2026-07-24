@@ -14,7 +14,6 @@ use mokosh_protocol::{
     Envelope, EnvelopeFlags, GameMessage, Transport, CURRENT_PROTOCOL_VERSION,
 };
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
-use wasm_bindgen_futures;
 
 use crate::{BoxEntity, GameEntities, LocalSessionId, PlayerEntity, WINDOW_HEIGHT};
 
@@ -43,15 +42,13 @@ pub struct MessageCounter(pub u64);
 
 /// Global connection ready channel
 /// Used to pass connection info from async task to Bevy systems
-static CONNECTION_READY: OnceLock<
-    StdMutex<
-        Option<(
-            mpsc::Sender<Envelope>,
-            Arc<futures::lock::Mutex<mpsc::Receiver<Envelope>>>,
-            String,
-        )>,
-    >,
-> = OnceLock::new();
+type ConnectionInfo = (
+    mpsc::Sender<Envelope>,
+    Arc<futures::lock::Mutex<mpsc::Receiver<Envelope>>>,
+    String,
+);
+
+static CONNECTION_READY: OnceLock<StdMutex<Option<ConnectionInfo>>> = OnceLock::new();
 
 // ============================================================================
 // Connection management
@@ -280,9 +277,7 @@ pub fn network_receive_system(
                                                     - (player_state.position.y + 16.0),
                                                 1.0,
                                             ),
-                                            PlayerEntity {
-                                                session_id: player_state.id.clone(),
-                                            },
+                                            PlayerEntity,
                                         ));
 
                                         if is_local {
@@ -335,9 +330,7 @@ pub fn network_receive_system(
                                                         - (box_state.position.y + 16.0),
                                                     1.0,
                                                 ),
-                                                BoxEntity {
-                                                    box_id: box_state.id,
-                                                },
+                                                BoxEntity,
                                             ))
                                             .id();
 

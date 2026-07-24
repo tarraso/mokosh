@@ -108,8 +108,8 @@ Then open **http://localhost:8000** in your browser!
 ### ECS Design
 
 **Components**:
-- `PlayerEntity { session_id: String }` - Player marker with ID
-- `BoxEntity { box_id: u32 }` - Box marker with ID
+- `PlayerEntity` - Player marker; IDs live in the `GameEntities` resource
+- `BoxEntity` - Box marker; IDs live in the `GameEntities` resource
 - `LocalPlayer` - Tag for local player (blue color)
 
 **Resources**:

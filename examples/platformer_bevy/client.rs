@@ -32,19 +32,13 @@ const SERVER_URL: &str = "ws://127.0.0.1:8080";
 // ============================================================================
 
 #[derive(Component)]
-#[allow(dead_code)]
-struct PlayerEntity {
-    session_id: String,
-}
+struct PlayerEntity;
 
 #[derive(Component)]
 struct LocalPlayerMarker;
 
 #[derive(Component)]
-#[allow(dead_code)]
-struct BoxEntity {
-    box_id: u32,
-}
+struct BoxEntity;
 
 #[derive(Component)]
 struct GroundLine;
@@ -298,9 +292,7 @@ fn network_receive_system(
                                     WINDOW_HEIGHT as f32 - (player_state.position.y + 16.0),
                                     1.0,
                                 ),
-                                PlayerEntity {
-                                    session_id: player_state.id.clone(),
-                                },
+                                PlayerEntity,
                             ));
 
                             if is_local {
@@ -346,9 +338,7 @@ fn network_receive_system(
                                         WINDOW_HEIGHT as f32 - (box_state.position.y + 16.0),
                                         1.0,
                                     ),
-                                    BoxEntity {
-                                        box_id: box_state.id,
-                                    },
+                                    BoxEntity,
                                 ))
                                 .id();
 
