@@ -17,10 +17,10 @@ use mokosh_protocol::messages::{
 };
 use mokosh_protocol::{
     CodecType, Envelope, EnvelopeFlags, ReliabilityConfig, ReliabilityMode, SessionEnvelope,
-    CURRENT_PROTOCOL_VERSION,
+    SessionId, CURRENT_PROTOCOL_VERSION,
 };
 use mokosh_protocol_derive::GameMessage;
-use mokosh_server::transport::udp::UdpServer;
+use mokosh_server::transport::udp::{UdpServer, UdpSessionRateLimitConfig};
 use mokosh_server::transport::ReliableServerLink;
 use mokosh_server::{GameEvent, Server, ServerConfig};
 use serde::{Deserialize, Serialize};
@@ -89,6 +89,22 @@ fn reliable_disconnect() -> Envelope {
     )
 }
 
+fn reliable_game_message(seq: u32) -> Envelope {
+    let message = TestMsg {
+        seq,
+        value: seq as f32,
+    };
+    Envelope::new_simple(
+        CURRENT_PROTOCOL_VERSION,
+        1,
+        0,
+        300,
+        seq as u64,
+        ReliabilityMode::ReliableOrdered.to_flags(),
+        serde_json::to_vec(&message).unwrap().into(),
+    )
+}
+
 fn probe_envelope(route_id: u16) -> Envelope {
     Envelope::new_simple(
         CURRENT_PROTOCOL_VERSION,
@@ -99,6 +115,110 @@ fn probe_envelope(route_id: u16) -> Envelope {
         EnvelopeFlags::empty(),
         Vec::new().into(),
     )
+}
+
+struct RawUdpHarness {
+    server_addr: std::net::SocketAddr,
+    event_rx: mpsc::Receiver<GameEvent>,
+    transport_probe_tx: mpsc::Sender<SessionEnvelope>,
+    server_task: tokio::task::JoinHandle<()>,
+    transport_task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for RawUdpHarness {
+    fn drop(&mut self) {
+        self.server_task.abort();
+        self.transport_task.abort();
+    }
+}
+
+async fn spawn_raw_udp_harness(
+    udp_config: UdpSessionRateLimitConfig,
+    reliability: ReliabilityConfig,
+    mut server_config: ServerConfig,
+) -> RawUdpHarness {
+    let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let server_addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let (t_in_tx, t_in_rx) = mpsc::channel(1024);
+    let (t_out_tx, t_out_rx) = mpsc::channel(1024);
+    let transport_probe_tx = t_out_tx.clone();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+    let transport_task = tokio::spawn(async move {
+        let _ = UdpServer::new(server_addr)
+            .with_session_rate_limit(udp_config)
+            .run(t_in_tx, t_out_rx, Some(ready_tx))
+            .await;
+    });
+    ready_rx.await.expect("UDP server failed to start");
+
+    let (srv_in_rx, srv_out_tx) = ReliableServerLink::new(reliability.clone())
+        .with_tick(Duration::from_millis(10))
+        .spawn(t_in_rx, t_out_tx);
+    server_config.reliability = Some(reliability);
+    server_config.retransmit_tick = Duration::from_millis(10);
+    let mut server = Server::with_full_config(
+        srv_in_rx,
+        srv_out_tx,
+        json(),
+        json(),
+        server_config,
+        None,
+        None,
+        NoCompressor,
+        NoEncryptor,
+    );
+
+    let (event_tx, event_rx) = mpsc::channel(1024);
+    let server_task = tokio::spawn(async move {
+        loop {
+            match server.tick().await {
+                Ok(Some(event)) => {
+                    if event_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+    });
+
+    RawUdpHarness {
+        server_addr,
+        event_rx,
+        transport_probe_tx,
+        server_task,
+        transport_task,
+    }
+}
+
+async fn recv_connected(event_rx: &mut mpsc::Receiver<GameEvent>, context: &str) -> SessionId {
+    loop {
+        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{context}: PlayerConnected timed out"))
+            .expect("server event channel closed")
+        {
+            GameEvent::PlayerConnected(session_id) => return session_id,
+            _ => continue,
+        }
+    }
+}
+
+async fn recv_disconnected(event_rx: &mut mpsc::Receiver<GameEvent>, context: &str) -> SessionId {
+    loop {
+        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{context}: PlayerDisconnected timed out"))
+            .expect("server event channel closed")
+        {
+            GameEvent::PlayerDisconnected(session_id) => return session_id,
+            _ => continue,
+        }
+    }
 }
 
 async fn recv_route(socket: &UdpSocket, route_id: u16, wait: Duration) -> Envelope {
@@ -406,90 +526,33 @@ async fn udp_client_handle_reliable_to_server() {
 
 #[tokio::test]
 async fn udp_connection_timeout_reclaims_transport_and_reliability_session() {
-    let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let server_addr = probe.local_addr().unwrap();
-    drop(probe);
-
-    let (t_in_tx, t_in_rx) = mpsc::channel(256);
-    let (t_out_tx, t_out_rx) = mpsc::channel(256);
-    let transport_probe_tx = t_out_tx.clone();
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-
-    let transport_task = tokio::spawn(async move {
-        let _ = UdpServer::new(server_addr)
-            .run(t_in_tx, t_out_rx, Some(ready_tx))
-            .await;
-    });
-    ready_rx.await.expect("UDP server failed to start");
-
     // Keep HELLO_OK unacknowledged in a one-message window. Timeout teardown
     // must bypass that full reliability window.
     let reliability = ReliabilityConfig {
         send_window: 1,
         ..fast_reliability()
     };
-    let (srv_in_rx, srv_out_tx) = ReliableServerLink::new(reliability.clone())
-        .with_tick(Duration::from_millis(10))
-        .spawn(t_in_rx, t_out_tx);
     let server_cfg = ServerConfig {
-        reliability: Some(reliability),
+        max_concurrent_sessions: 1,
         connection_timeout: Duration::from_millis(50),
         keepalive_interval: Duration::from_secs(30),
         ..Default::default()
     };
-    let mut server = Server::with_full_config(
-        srv_in_rx,
-        srv_out_tx,
-        json(),
-        json(),
+    let mut harness = spawn_raw_udp_harness(
+        UdpSessionRateLimitConfig::default(),
+        reliability,
         server_cfg,
-        None,
-        None,
-        NoCompressor,
-        NoEncryptor,
-    );
-
-    let (event_tx, mut event_rx) = mpsc::channel(16);
-    let server_task = tokio::spawn(async move {
-        loop {
-            match server.tick().await {
-                Ok(Some(event)) => {
-                    if event_tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-                Ok(None) => {}
-                Err(_) => break,
-            }
-        }
-    });
+    )
+    .await;
 
     let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    client.connect(server_addr).await.unwrap();
+    client.connect(harness.server_addr).await.unwrap();
     client.send(&reliable_hello().to_bytes()).await.unwrap();
 
-    let old_session = loop {
-        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
-            .await
-            .expect("initial HELLO event timed out")
-            .expect("server event channel closed")
-        {
-            GameEvent::PlayerConnected(session_id) => break session_id,
-            _ => continue,
-        }
-    };
+    let old_session = recv_connected(&mut harness.event_rx, "initial HELLO").await;
     let _hello_ok = recv_route(&client, routes::HELLO_OK, Duration::from_secs(1)).await;
 
-    let disconnected_session = loop {
-        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
-            .await
-            .expect("connection timeout event timed out")
-            .expect("server event channel closed")
-        {
-            GameEvent::PlayerDisconnected(session_id) => break session_id,
-            _ => continue,
-        }
-    };
+    let disconnected_session = recv_disconnected(&mut harness.event_rx, "connection timeout").await;
     assert_eq!(disconnected_session, old_session);
 
     let disconnect = recv_route(&client, routes::DISCONNECT, Duration::from_secs(1)).await;
@@ -499,7 +562,8 @@ async fn udp_connection_timeout_reclaims_transport_and_reliability_session() {
     // Probe the transport directly. If session_to_addr leaked, this route would
     // still be delivered to the old peer.
     const STALE_PROBE_ROUTE: u16 = 321;
-    transport_probe_tx
+    harness
+        .transport_probe_tx
         .send(SessionEnvelope::new(
             old_session,
             probe_envelope(STALE_PROBE_ROUTE),
@@ -511,94 +575,33 @@ async fn udp_connection_timeout_reclaims_transport_and_reliability_session() {
     // The same SocketAddr must mint a new UDP SessionId. Reusing reliable
     // control sequence 1 must be accepted by a fresh reliability pipe.
     client.send(&reliable_hello().to_bytes()).await.unwrap();
-    let new_session = loop {
-        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
-            .await
-            .expect("reconnect HELLO event timed out")
-            .expect("server event channel closed")
-        {
-            GameEvent::PlayerConnected(session_id) => break session_id,
-            _ => continue,
-        }
-    };
+    let new_session = recv_connected(&mut harness.event_rx, "reconnect after timeout").await;
     assert_ne!(new_session, old_session);
     let _hello_ok = recv_route(&client, routes::HELLO_OK, Duration::from_secs(1)).await;
-
-    server_task.abort();
-    transport_task.abort();
 }
 
 #[tokio::test]
 async fn udp_session_limit_rejects_and_releases_transport_state() {
-    let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let server_addr = probe.local_addr().unwrap();
-    drop(probe);
-
-    let (t_in_tx, t_in_rx) = mpsc::channel(256);
-    let (t_out_tx, t_out_rx) = mpsc::channel(256);
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-
-    let transport_task = tokio::spawn(async move {
-        let _ = UdpServer::new(server_addr)
-            .run(t_in_tx, t_out_rx, Some(ready_tx))
-            .await;
-    });
-    ready_rx.await.expect("UDP server failed to start");
-
-    let reliability = fast_reliability();
-    let (srv_in_rx, srv_out_tx) = ReliableServerLink::new(reliability.clone())
-        .with_tick(Duration::from_millis(10))
-        .spawn(t_in_rx, t_out_tx);
     let server_cfg = ServerConfig {
         max_concurrent_sessions: 1,
-        reliability: Some(reliability),
         ..Default::default()
     };
-    let mut server = Server::with_full_config(
-        srv_in_rx,
-        srv_out_tx,
-        json(),
-        json(),
+    let mut harness = spawn_raw_udp_harness(
+        UdpSessionRateLimitConfig::default(),
+        fast_reliability(),
         server_cfg,
-        None,
-        None,
-        NoCompressor,
-        NoEncryptor,
-    );
-
-    let (event_tx, mut event_rx) = mpsc::channel(16);
-    let server_task = tokio::spawn(async move {
-        loop {
-            match server.tick().await {
-                Ok(Some(event)) => {
-                    if event_tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-                Ok(None) => {}
-                Err(_) => break,
-            }
-        }
-    });
+    )
+    .await;
 
     let first = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    first.connect(server_addr).await.unwrap();
+    first.connect(harness.server_addr).await.unwrap();
     first.send(&reliable_hello().to_bytes()).await.unwrap();
 
-    let first_session = loop {
-        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
-            .await
-            .expect("first connection timed out")
-            .expect("server event channel closed")
-        {
-            GameEvent::PlayerConnected(session_id) => break session_id,
-            _ => continue,
-        }
-    };
+    let first_session = recv_connected(&mut harness.event_rx, "first connection").await;
     let _hello_ok = recv_route(&first, routes::HELLO_OK, Duration::from_secs(1)).await;
 
     let rejected = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    rejected.connect(server_addr).await.unwrap();
+    rejected.connect(harness.server_addr).await.unwrap();
     rejected.send(&reliable_hello().to_bytes()).await.unwrap();
 
     let hello_error = recv_route(&rejected, routes::HELLO_ERROR, Duration::from_secs(1)).await;
@@ -608,35 +611,127 @@ async fn udp_session_limit_rejects_and_releases_transport_state() {
     let disconnect: Disconnect = serde_json::from_slice(&disconnect.payload).unwrap();
     assert_eq!(disconnect.reason, DisconnectReason::Overloaded);
 
-    first.send(&reliable_disconnect().to_bytes()).await.unwrap();
-    let disconnected_session = loop {
-        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
-            .await
-            .expect("first disconnect timed out")
-            .expect("server event channel closed")
-        {
-            GameEvent::PlayerDisconnected(session_id) => break session_id,
-            _ => continue,
+    // Reaching the admission cap must not disrupt an already-established peer.
+    first
+        .send(&reliable_game_message(1).to_bytes())
+        .await
+        .unwrap();
+    let game_event = tokio::time::timeout(Duration::from_secs(2), harness.event_rx.recv())
+        .await
+        .expect("existing session game message timed out")
+        .expect("server event channel closed");
+    match game_event {
+        GameEvent::GameMessage {
+            session_id,
+            envelope,
+        } => {
+            assert_eq!(session_id, first_session);
+            assert_eq!(envelope.route_id, 300);
+            let message: TestMsg = serde_json::from_slice(&envelope.payload).unwrap();
+            assert_eq!(message.seq, 1);
         }
-    };
+        other => panic!("expected GameMessage from existing session, got {other:?}"),
+    }
+
+    first.send(&reliable_disconnect().to_bytes()).await.unwrap();
+    let disconnected_session =
+        recv_disconnected(&mut harness.event_rx, "first client disconnect").await;
     assert_eq!(disconnected_session, first_session);
 
     // The rejection DISCONNECT must have removed this peer from both the UDP
     // routing maps and the reliability peer set, so control sequence 1 is fresh.
     rejected.send(&reliable_hello().to_bytes()).await.unwrap();
-    let admitted_session = loop {
-        match tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
-            .await
-            .expect("reconnect after capacity release timed out")
-            .expect("server event channel closed")
-        {
-            GameEvent::PlayerConnected(session_id) => break session_id,
-            _ => continue,
-        }
-    };
+    let admitted_session =
+        recv_connected(&mut harness.event_rx, "reconnect after capacity release").await;
     assert_ne!(admitted_session, first_session);
     let _hello_ok = recv_route(&rejected, routes::HELLO_OK, Duration::from_secs(1)).await;
+}
 
-    server_task.abort();
-    transport_task.abort();
+#[tokio::test]
+async fn udp_per_ip_session_creation_flood_is_limited() {
+    const BURST: usize = 2;
+    const FLOOD_CLIENTS: usize = 32;
+
+    let udp_config = UdpSessionRateLimitConfig {
+        max_new_sessions_per_second: 0,
+        burst: BURST as u32,
+        ..Default::default()
+    };
+    let server_config = ServerConfig {
+        max_concurrent_sessions: 64,
+        ..Default::default()
+    };
+    let mut harness = spawn_raw_udp_harness(udp_config, fast_reliability(), server_config).await;
+
+    let mut accepted = Vec::new();
+    for index in 0..BURST {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        socket.connect(harness.server_addr).await.unwrap();
+        socket.send(&reliable_hello().to_bytes()).await.unwrap();
+        let session_id = recv_connected(
+            &mut harness.event_rx,
+            &format!("accepted burst client {index}"),
+        )
+        .await;
+        let _hello_ok = recv_route(&socket, routes::HELLO_OK, Duration::from_secs(1)).await;
+        accepted.push((socket, session_id));
+    }
+    assert_ne!(accepted[0].1, accepted[1].1);
+
+    let mut flood = Vec::with_capacity(FLOOD_CLIENTS);
+    for _ in 0..FLOOD_CLIENTS {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        socket.connect(harness.server_addr).await.unwrap();
+        socket.send(&reliable_hello().to_bytes()).await.unwrap();
+        flood.push(socket);
+    }
+
+    // All flood sockets share 127.0.0.1's exhausted bucket. Admission happens
+    // before SessionId/reliability allocation, so no game event or response
+    // (including ACK, HELLO_ERROR, or DISCONNECT) may be produced.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), harness.event_rx.recv())
+            .await
+            .is_err(),
+        "same-IP flood unexpectedly created a server session"
+    );
+    let mut buf = [0u8; 65_535];
+    for socket in &flood {
+        match socket.try_recv(&mut buf) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Ok(len) => {
+                let envelope =
+                    Envelope::from_bytes(bytes::Bytes::copy_from_slice(&buf[..len])).unwrap();
+                panic!(
+                    "rate-limited flood client unexpectedly received route {}",
+                    envelope.route_id
+                );
+            }
+            Err(error) => panic!("failed to inspect flood socket: {error}"),
+        }
+    }
+
+    // Empty admission tokens affect only new sessions. An established peer
+    // must still traverse UDP + reliability + Server normally.
+    accepted[0]
+        .0
+        .send(&reliable_game_message(1).to_bytes())
+        .await
+        .unwrap();
+    let event = tokio::time::timeout(Duration::from_secs(2), harness.event_rx.recv())
+        .await
+        .expect("existing session stopped working after flood")
+        .expect("server event channel closed");
+    match event {
+        GameEvent::GameMessage {
+            session_id,
+            envelope,
+        } => {
+            assert_eq!(session_id, accepted[0].1);
+            assert_eq!(envelope.route_id, 300);
+            let message: TestMsg = serde_json::from_slice(&envelope.payload).unwrap();
+            assert_eq!(message.seq, 1);
+        }
+        other => panic!("expected GameMessage after flood, got {other:?}"),
+    }
 }
