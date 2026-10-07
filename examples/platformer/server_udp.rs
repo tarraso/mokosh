@@ -12,6 +12,7 @@
 //! ```
 
 use mokosh_examples_shared::platformer::{PlatformerSimulation, PlayerInput, Simulation};
+use mokosh_examples_shared::DEMO_UDP_PSK;
 use mokosh_protocol::compression::NoCompressor;
 use mokosh_protocol::encryption::NoEncryptor;
 use mokosh_protocol::{CodecType, ReliabilityConfig, ReliabilityMode};
@@ -35,9 +36,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (t_out_tx, t_out_rx) = mpsc::channel(100);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
-    // Start the UDP transport.
+    // Start the UDP transport. A short handshake derives per-session, per-direction
+    // keys from the shared PSK, and every datagram is authenticated and bound to its
+    // session, direction, and sequence (with an anti-replay window) — closing
+    // on-path / same-NAT replay, redirection, and reflection (UDP security #3).
+    // `require_encryption(true)` makes startup fail closed if the key is dropped.
     let addr: SocketAddr = "127.0.0.1:8080".parse()?;
-    let transport = UdpServer::new(addr);
+    let transport = UdpServer::new(addr)
+        .with_datagram_encryption(DEMO_UDP_PSK)
+        .require_encryption(true);
     tokio::spawn(async move {
         if let Err(e) = transport.run(t_in_tx, t_out_rx, Some(ready_tx)).await {
             eprintln!("❌ Transport error: {}", e);
@@ -70,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut platformer_sim = PlatformerSimulation::new();
 
-    println!("✅ Server running on udp://127.0.0.1:8080 (reliability ON)");
+    println!("✅ Server running on udp://127.0.0.1:8080 (reliability ON, datagram encryption ON)");
     println!("📊 Initial boxes spawned: {}", platformer_sim.boxes.len());
     println!("🎮 Waiting for players to connect...\n");
 

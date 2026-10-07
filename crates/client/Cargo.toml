@@ -18,6 +18,7 @@ bytes = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
+getrandom = { workspace = true }
 instant = { version = "0.1", features = ["wasm-bindgen"] }
 
 # Native-only dependencies

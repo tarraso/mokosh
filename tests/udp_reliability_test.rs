@@ -248,7 +248,10 @@ async fn send_validated_hello(socket: &UdpSocket) {
     .await;
     let challenge = UdpAddressChallenge::from_bytes(&challenge.payload).unwrap();
     let response = UdpAddressResponse {
+        // Fresh per attempt so same-millisecond reconnects aren't mistaken for a
+        // replayed handshake by the server's single-use cache.
         cookie: challenge.cookie,
+        client_random: rand::random::<[u8; 32]>(),
         hello,
     };
     let response = Envelope::new_simple(
@@ -412,6 +415,137 @@ async fn udp_reliable_ordered_end_to_end() {
         received,
         (1..=N).collect::<Vec<_>>(),
         "all reliable-ordered messages should arrive over real UDP, exactly once, in order"
+    );
+}
+
+/// Same as above but with UDP datagram encryption (per-session keys) enabled on
+/// both ends: proves the key-agreement handshake and epoch switch work through the
+/// full `ReliableLink` + `Client`/`Server` stack, not just at the transport level.
+#[tokio::test]
+async fn udp_encrypted_reliable_end_to_end() {
+    const N: u32 = 6;
+    const PSK: [u8; 32] = [0x5a; 32];
+
+    let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let server_addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    // Server transport with datagram encryption required.
+    let (t_in_tx, t_in_rx) = mpsc::channel(256);
+    let (t_out_tx, t_out_rx) = mpsc::channel(256);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let server_transport = UdpServer::new(server_addr)
+        .with_datagram_encryption(PSK)
+        .require_encryption(true);
+    let transport_task = tokio::spawn(async move {
+        let _ = server_transport
+            .run(t_in_tx, t_out_rx, Some(ready_tx))
+            .await;
+    });
+    ready_rx.await.expect("UDP server failed to start");
+
+    let (srv_in_rx, srv_out_tx) = ReliableServerLink::new(fast_reliability())
+        .with_tick(Duration::from_millis(10))
+        .spawn(t_in_rx, t_out_tx);
+    let server_cfg = ServerConfig {
+        reliability: Some(fast_reliability()),
+        retransmit_tick: Duration::from_millis(10),
+        ..Default::default()
+    };
+    let mut server = Server::with_full_config(
+        srv_in_rx,
+        srv_out_tx,
+        json(),
+        json(),
+        server_cfg,
+        None,
+        None,
+        NoCompressor,
+        NoEncryptor,
+    );
+    let server_task = tokio::spawn(async move {
+        let mut sent = false;
+        loop {
+            match server.tick().await {
+                Ok(Some(GameEvent::PlayerConnected(s))) => {
+                    if !sent {
+                        for i in 1..=N {
+                            server
+                                .send_message_with(
+                                    s,
+                                    TestMsg {
+                                        seq: i,
+                                        value: i as f32,
+                                    },
+                                    ReliabilityMode::ReliableOrdered,
+                                    Duration::from_secs(30),
+                                )
+                                .await
+                                .unwrap();
+                        }
+                        sent = true;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Client transport with the same PSK.
+    let (cli_in_tx, cli_in_rx) = mpsc::channel(256);
+    let (cli_out_tx, cli_out_rx) = mpsc::channel(256);
+    let (game_tx, mut game_rx) = mpsc::channel(256);
+    let client_transport = ReliableLink::new(
+        UdpClient::new(server_addr.to_string())
+            .with_datagram_encryption(PSK)
+            .require_encryption(true),
+        fast_reliability(),
+    )
+    .with_tick(Duration::from_millis(10));
+    let client_transport_task = tokio::spawn(async move {
+        let _ = client_transport.run(cli_in_tx, cli_out_rx).await;
+    });
+
+    let client_cfg = ClientConfig {
+        reliability: Some(fast_reliability()),
+        retransmit_tick: Duration::from_millis(10),
+        ..Default::default()
+    };
+    let mut client = Client::with_full_config(
+        cli_in_rx,
+        cli_out_tx,
+        json(),
+        json(),
+        client_cfg,
+        None,
+        NoCompressor,
+        NoEncryptor,
+        Some(game_tx),
+    );
+    client.connect().await.unwrap();
+    let client_task = tokio::spawn(async move { client.run().await });
+
+    let mut received: Vec<u32> = Vec::new();
+    while received.len() < N as usize {
+        match tokio::time::timeout(Duration::from_secs(10), game_rx.recv()).await {
+            Ok(Some(env)) => {
+                let msg: TestMsg = serde_json::from_slice(&env.payload).unwrap();
+                received.push(msg.seq);
+            }
+            _ => break,
+        }
+    }
+
+    server_task.abort();
+    client_task.abort();
+    transport_task.abort();
+    client_transport_task.abort();
+
+    assert_eq!(
+        received,
+        (1..=N).collect::<Vec<_>>(),
+        "encrypted reliable-ordered messages should arrive exactly once, in order"
     );
 }
 

@@ -12,6 +12,7 @@
 //! ```
 
 use mokosh_examples_shared::platformer::{PlatformerSimulation, PlayerInput, Simulation};
+use mokosh_examples_shared::DEMO_UDP_PSK;
 use mokosh_protocol::compression::NoCompressor;
 use mokosh_protocol::encryption::NoEncryptor;
 use mokosh_protocol::{CodecType, ReliabilityConfig, ReliabilityMode};
@@ -34,9 +35,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (t_out_tx, t_out_rx) = mpsc::channel(100);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
-    // UDP transport.
+    // UDP transport with per-session, per-direction keys derived from the shared
+    // PSK: every datagram is bound to its session/direction/sequence with an
+    // anti-replay window, closing capture-replay/redirect/reflection (UDP security
+    // #3). `require_encryption(true)` fails closed if the key is ever dropped.
     let addr: SocketAddr = "127.0.0.1:8080".parse()?;
-    let transport = UdpServer::new(addr);
+    let transport = UdpServer::new(addr)
+        .with_datagram_encryption(DEMO_UDP_PSK)
+        .require_encryption(true);
     tokio::spawn(async move {
         if let Err(e) = transport.run(t_in_tx, t_out_rx, Some(ready_tx)).await {
             eprintln!("❌ Transport error: {}", e);

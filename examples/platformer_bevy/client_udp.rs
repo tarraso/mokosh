@@ -18,6 +18,7 @@ use mokosh_client::transport::udp::UdpClient;
 use mokosh_client::transport::{ReliableLink, Transport};
 use mokosh_client::{Client, ClientConfig, ClientHandle};
 use mokosh_examples_shared::platformer::{GameState, PlayerInput, GROUND_Y};
+use mokosh_examples_shared::DEMO_UDP_PSK;
 use mokosh_protocol::compression::NoCompressor;
 use mokosh_protocol::encryption::NoEncryptor;
 use mokosh_protocol::reliability::ReliabilityMode;
@@ -86,9 +87,13 @@ fn main() {
 
         // UDP transport, wrapped in the reliability decorator (the Client event
         // loop is reliability-agnostic; the link adds ACK/retransmit/ordering).
+        // Per-session, per-direction keys are derived from the shared PSK, matching
+        // the server; `require_encryption(true)` refuses to run without it.
         tokio::spawn(async move {
             let transport = ReliableLink::new(
-                UdpClient::new(SERVER_ADDR.to_string()),
+                UdpClient::new(SERVER_ADDR.to_string())
+                    .with_datagram_encryption(DEMO_UDP_PSK)
+                    .require_encryption(true),
                 ReliabilityConfig::default(),
             );
             if let Err(e) = transport.run(from_transport_tx, to_transport_rx).await {

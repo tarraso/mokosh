@@ -53,10 +53,12 @@ pub mod messages;
 pub mod reliability;
 pub mod state;
 pub mod transport;
+pub mod udp_record;
 pub mod udp_validation;
 pub mod version;
 
 pub use codec_registry::CodecType;
+pub use encryption::{ChaCha20Poly1305Encryptor, EncryptionType, Encryptor, NoEncryptor};
 pub use envelope::{Envelope, EnvelopeFlags, ENVELOPE_HEADER_SIZE};
 pub use error::{EnvelopeError, ProtocolError, Result};
 #[cfg(feature = "native")]
@@ -72,6 +74,10 @@ pub use reliability::{
 };
 pub use state::ConnectionState;
 pub use transport::Transport;
+pub use udp_record::{
+    BootstrapRecords, RecordKey, Role, SessionRecords, EPOCH_BOOTSTRAP, EPOCH_SESSION,
+    MIN_RECORD_SIZE, SESSION_RANDOM_SIZE,
+};
 pub use udp_validation::{UdpAddressChallenge, UdpAddressResponse, UDP_ADDRESS_COOKIE_SIZE};
 pub use version::{negotiate_version, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION};
 

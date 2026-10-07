@@ -5,39 +5,59 @@
 //! lets the server remain stateless until the peer proves it can receive the
 //! challenge at its claimed address.
 
+use crate::udp_record::SESSION_RANDOM_SIZE;
 use crate::{Envelope, EnvelopeError, ENVELOPE_HEADER_SIZE};
 use bytes::{BufMut, Bytes, BytesMut};
 
 /// Version byte + monotonic issue timestamp + full keyed BLAKE3 tag.
 pub const UDP_ADDRESS_COOKIE_SIZE: usize = 1 + 8 + 32;
 
-/// Stateless cookie sent by the server to an unvalidated UDP peer.
+/// Stateless cookie sent by the server to an unvalidated UDP peer, carrying the
+/// server's key-agreement random.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpAddressChallenge {
     /// Opaque server-generated cookie; clients must return it unchanged.
     pub cookie: [u8; UDP_ADDRESS_COOKIE_SIZE],
+    /// Server contribution to the per-session key derivation.
+    pub server_random: [u8; SESSION_RANDOM_SIZE],
 }
 
 impl UdpAddressChallenge {
     pub fn to_bytes(&self) -> Bytes {
-        Bytes::copy_from_slice(&self.cookie)
+        let mut bytes = BytesMut::with_capacity(UDP_ADDRESS_COOKIE_SIZE + SESSION_RANDOM_SIZE);
+        bytes.put_slice(&self.cookie);
+        bytes.put_slice(&self.server_random);
+        bytes.freeze()
     }
 
     pub fn from_bytes(bytes: &Bytes) -> Result<Self, EnvelopeError> {
-        let cookie: [u8; UDP_ADDRESS_COOKIE_SIZE] = bytes.as_ref().try_into().map_err(|_| {
-            EnvelopeError::Invalid(format!(
-                "UDP address challenge must be {UDP_ADDRESS_COOKIE_SIZE} bytes"
-            ))
-        })?;
-        Ok(Self { cookie })
+        let expected = UDP_ADDRESS_COOKIE_SIZE + SESSION_RANDOM_SIZE;
+        if bytes.len() != expected {
+            return Err(EnvelopeError::Invalid(format!(
+                "UDP address challenge must be {expected} bytes"
+            )));
+        }
+        let cookie: [u8; UDP_ADDRESS_COOKIE_SIZE] = bytes[..UDP_ADDRESS_COOKIE_SIZE]
+            .try_into()
+            .expect("slice length checked");
+        let server_random: [u8; SESSION_RANDOM_SIZE] = bytes[UDP_ADDRESS_COOKIE_SIZE..]
+            .try_into()
+            .expect("slice length checked");
+        Ok(Self {
+            cookie,
+            server_random,
+        })
     }
 }
 
-/// Cookie echo carrying the exact HELLO that caused the challenge.
+/// Cookie echo carrying the client's key-agreement random and the exact HELLO
+/// that caused the challenge.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UdpAddressResponse {
     /// Cookie copied verbatim from [`UdpAddressChallenge`].
     pub cookie: [u8; UDP_ADDRESS_COOKIE_SIZE],
+    /// Client contribution to the per-session key derivation.
+    pub client_random: [u8; SESSION_RANDOM_SIZE],
     /// Exact HELLO envelope that triggered the challenge.
     pub hello: Envelope,
 }
@@ -45,14 +65,17 @@ pub struct UdpAddressResponse {
 impl UdpAddressResponse {
     pub fn to_bytes(&self) -> Bytes {
         let hello = self.hello.to_bytes();
-        let mut bytes = BytesMut::with_capacity(UDP_ADDRESS_COOKIE_SIZE + hello.len());
+        let mut bytes =
+            BytesMut::with_capacity(UDP_ADDRESS_COOKIE_SIZE + SESSION_RANDOM_SIZE + hello.len());
         bytes.put_slice(&self.cookie);
+        bytes.put_slice(&self.client_random);
         bytes.put_slice(&hello);
         bytes.freeze()
     }
 
     pub fn from_bytes(bytes: &Bytes) -> Result<Self, EnvelopeError> {
-        let minimum = UDP_ADDRESS_COOKIE_SIZE + ENVELOPE_HEADER_SIZE;
+        let prefix = UDP_ADDRESS_COOKIE_SIZE + SESSION_RANDOM_SIZE;
+        let minimum = prefix + ENVELOPE_HEADER_SIZE;
         if bytes.len() < minimum {
             return Err(EnvelopeError::BufferTooShort {
                 need: minimum,
@@ -63,7 +86,10 @@ impl UdpAddressResponse {
         let cookie: [u8; UDP_ADDRESS_COOKIE_SIZE] = bytes[..UDP_ADDRESS_COOKIE_SIZE]
             .try_into()
             .expect("slice length checked");
-        let hello_bytes = bytes.slice(UDP_ADDRESS_COOKIE_SIZE..);
+        let client_random: [u8; SESSION_RANDOM_SIZE] = bytes[UDP_ADDRESS_COOKIE_SIZE..prefix]
+            .try_into()
+            .expect("slice length checked");
+        let hello_bytes = bytes.slice(prefix..);
         let hello = Envelope::from_bytes(hello_bytes.clone())?;
         if hello.total_size() != hello_bytes.len() {
             return Err(EnvelopeError::Invalid(
@@ -71,7 +97,11 @@ impl UdpAddressResponse {
             ));
         }
 
-        Ok(Self { cookie, hello })
+        Ok(Self {
+            cookie,
+            client_random,
+            hello,
+        })
     }
 }
 
@@ -96,18 +126,24 @@ mod tests {
     fn challenge_round_trip_and_length_check() {
         let challenge = UdpAddressChallenge {
             cookie: [7; UDP_ADDRESS_COOKIE_SIZE],
+            server_random: [3; SESSION_RANDOM_SIZE],
         };
         assert_eq!(
             UdpAddressChallenge::from_bytes(&challenge.to_bytes()).unwrap(),
             challenge
         );
         assert!(UdpAddressChallenge::from_bytes(&Bytes::from_static(b"short")).is_err());
+        // Correct length but trailing byte is rejected.
+        let mut trailing = BytesMut::from(challenge.to_bytes().as_ref());
+        trailing.put_u8(0);
+        assert!(UdpAddressChallenge::from_bytes(&trailing.freeze()).is_err());
     }
 
     #[test]
     fn response_round_trip_rejects_trailing_bytes() {
         let response = UdpAddressResponse {
             cookie: [9; UDP_ADDRESS_COOKIE_SIZE],
+            client_random: [5; SESSION_RANDOM_SIZE],
             hello: hello(),
         };
         assert_eq!(
