@@ -2,9 +2,9 @@
 //!
 //! Control messages (route_id < 100) handle protocol-level operations:
 //! - HELLO/HELLO_OK/HELLO_ERROR: version negotiation and connection establishment
-//! - AUTH_REQUEST/AUTH_RESPONSE: authentication (future)
+//! - AUTH_REQUEST/AUTH_RESPONSE: authentication
 //! - DISCONNECT: graceful disconnection
-//! - PING/PONG: keepalive and latency measurement (future)
+//! - PING/PONG: keepalive and latency measurement
 
 use serde::{Deserialize, Serialize};
 
@@ -19,19 +19,19 @@ pub mod routes {
     /// HELLO_ERROR message (Server → Client): handshake rejected
     pub const HELLO_ERROR: u16 = 3;
 
-    /// AUTH_REQUEST message (Client → Server): authentication request (future)
+    /// AUTH_REQUEST message (Client → Server): authentication request
     pub const AUTH_REQUEST: u16 = 10;
 
-    /// AUTH_RESPONSE message (Server → Client): authentication response (future)
+    /// AUTH_RESPONSE message (Server → Client): authentication response
     pub const AUTH_RESPONSE: u16 = 11;
 
-    /// DISCONNECT message (bidirectional): graceful disconnection (future)
+    /// DISCONNECT message (bidirectional): graceful disconnection
     pub const DISCONNECT: u16 = 20;
 
-    /// PING message (bidirectional): keepalive request (future)
+    /// PING message (bidirectional): keepalive request
     pub const PING: u16 = 30;
 
-    /// PONG message (bidirectional): keepalive response (future)
+    /// PONG message (bidirectional): keepalive response
     pub const PONG: u16 = 31;
 
     /// ACK message (bidirectional): acknowledges received reliable messages.

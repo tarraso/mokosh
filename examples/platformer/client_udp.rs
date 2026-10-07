@@ -83,10 +83,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("✅ Connected; streaming inputs and snapshots for {DEMO_SECS}s...\n");
 
-    // NOTE: inputs are sent by pushing raw envelopes onto the transport's outgoing
-    // channel. `Client::run()` consumes the client, so app->server sends currently
-    // go around it (see doc/TODO.md, "Route client outgoing through Client").
-    // Unreliable (empty flags) is the idiomatic choice for per-frame inputs anyway.
+    // Per-frame inputs go directly to the transport's outgoing channel, bypassing
+    // the Client's reliability tracking. Empty flags select unreliable delivery.
     let mut input_interval = tokio::time::interval(Duration::from_millis(50));
     let deadline = tokio::time::sleep(Duration::from_secs(DEMO_SECS));
     tokio::pin!(deadline);

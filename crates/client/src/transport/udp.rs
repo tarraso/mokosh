@@ -81,7 +81,7 @@ impl UdpClient {
 
     /// Authenticates and encrypts every datagram using keys derived from the
     /// 32-byte pre-shared key, matching the server's
-    /// [`with_datagram_encryption`]
+    /// `with_datagram_encryption` configuration.
     /// A short handshake derives per-session, per-direction keys; see
     /// [`mokosh_protocol::udp_record`] for the scheme and trust model.
     pub fn with_datagram_encryption(mut self, psk: [u8; 32]) -> Self {

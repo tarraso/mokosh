@@ -119,6 +119,7 @@ let hello = Hello {
     min_protocol_version: 0x0100,
     codec_id: 1,
     schema_hash: 0,
+    reliability: false,
 };
 
 // Serialize and send in envelope with route_id = routes::HELLO
@@ -129,7 +130,9 @@ let hello = Hello {
 - `RELIABLE` (bit 0): Message requires guaranteed delivery
 - `ENCRYPTED` (bit 1): Payload is encrypted
 - `COMPRESSED` (bit 2): Payload is compressed
-- Bits 3-7: Reserved for future use
+- `SEQUENCED` (bit 3): Message participates in a sequence number space
+- `ORDERED` (bit 4): Messages are delivered in sequence order
+- Bits 5-7: Reserved
 
 Flags can be combined using bitwise OR:
 
@@ -164,4 +167,4 @@ Tests cover:
 
 ## License
 
-MIT OR Apache-2.0
+MIT - see [LICENSE](../../LICENSE).

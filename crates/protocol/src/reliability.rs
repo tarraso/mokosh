@@ -8,13 +8,13 @@
 //! # Concepts
 //! - [`ReliabilityMode`] — per-message delivery guarantee, encoded in
 //!   [`EnvelopeFlags`] so it travels on the wire.
-//! - [`ReliabilitySender`] — tracks outstanding reliable messages, retransmits
+//! - `ReliabilitySender` — tracks outstanding reliable messages, retransmits
 //!   them on a timer with exponential backoff, and gives up after a per-message
 //!   TTL (or a hard retry cap), reporting the drop.
-//! - [`ReliabilityReceiver`] — deduplicates, optionally reorders, and produces
+//! - `ReliabilityReceiver` — deduplicates, optionally reorders, and produces
 //!   [`Ack`]s (cumulative + selective bitmap).
-//! - [`ReliabilityChannel`] — one sender + receiver over one sequence space.
-//! - [`ReliabilityState`] — the two channels a peer needs: `control`
+//! - `ReliabilityChannel` — one sender + receiver over one sequence space.
+//! - `ReliabilityState` — the two channels a peer needs: `control`
 //!   (route_id < 100, handshake/auth) and `game` (route_id >= 100).
 //!
 //! Reuses the envelope `msg_id` as the sequence number. TTL is **never**
@@ -78,7 +78,7 @@ pub enum ReliabilityMode {
 impl ReliabilityMode {
     /// Decodes the reliability mode from envelope flags.
     ///
-    /// A bare `RELIABLE` bit (the legacy default) decodes to [`Reliable`].
+    /// A bare `RELIABLE` bit (the legacy default) decodes to [`Self::Reliable`].
     pub fn from_flags(flags: EnvelopeFlags) -> Self {
         let reliable = flags.contains(EnvelopeFlags::RELIABLE);
         let ordered = flags.contains(EnvelopeFlags::ORDERED);
@@ -179,7 +179,7 @@ pub struct ExpiredMessage {
     pub correlation_id: u64,
 }
 
-/// Outcome of feeding an inbound envelope to a [`ReliabilityReceiver`].
+/// Outcome of processing an inbound envelope.
 #[derive(Debug)]
 pub enum ReceiveOutcome {
     /// Deliver this envelope to the application now.

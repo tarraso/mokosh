@@ -4,7 +4,7 @@
 //!
 //! Build with:
 //! ```bash
-//! cargo build --example bevy_platformer_client_wasm --target wasm32-unknown-unknown --release --features wasm
+//! cargo build --example bevy_platformer_client_wasm --target wasm32-unknown-unknown --release --no-default-features --features wasm
 //! wasm-bindgen --out-dir examples/platformer_bevy/web/pkg --target web target/wasm32-unknown-unknown/release/examples/bevy_platformer_client_wasm.wasm
 //! ```
 

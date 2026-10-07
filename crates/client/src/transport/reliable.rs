@@ -1,8 +1,8 @@
 //! Reliability decorator for client transports (native-only).
 //!
-//! [`ReliableLink`] wraps an **unreliable** [`Transport`] (e.g. [`UdpClient`](super::udp::UdpClient))
+//! [`ReliableLink`] wraps an **unreliable** [`Transport`] (e.g. [`UdpClient`](crate::transport::udp::UdpClient))
 //! and turns it into a *reliable, ordered* one by running the pure
-//! [`ReliablePipe`] state machine below the event loop. The [`Client`](crate::Client)
+//! [`ReliablePipe`](mokosh_protocol::ReliablePipe) state machine below the event loop. The [`Client`](crate::Client)
 //! then stays reliability-agnostic: it emits `Envelope`s carrying reliability
 //! flags and receives delivered ones, never knowing whether reliability came
 //! from TCP (bare WebSocket) or from this link (UDP).

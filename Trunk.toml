@@ -1,6 +1,6 @@
 [build]
-# Target the WASM example
-target = "examples/platformer_bevy/client_wasm.rs"
+# HTML entry point for the WASM example
+target = "examples/platformer_bevy/web/index.html"
 
 # Output to the web directory
 dist = "examples/platformer_bevy/web/dist"
