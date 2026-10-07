@@ -49,8 +49,8 @@ use serde::{de::DeserializeOwned, Serialize};
 ///
 /// # Schema Hash
 ///
-/// For MVP, schema hashes are defined manually. In the future, a derive macro
-/// will automatically generate stable hashes from the struct definition.
+/// `#[derive(GameMessage)]` from `mokosh-protocol-derive` generates a schema hash
+/// from the struct definition. Manual implementations can provide their own hash.
 ///
 /// Manual hash guidelines:
 /// - Use a unique 64-bit value for each message type
@@ -96,14 +96,7 @@ pub fn calculate_global_schema_hash(message_hashes: &[u64]) -> u64 {
 
 /// Message registry for tracking registered message types
 ///
-/// This is a simple registry for future extensibility. Currently it only stores
-/// registered message types for validation purposes.
-///
-/// In future phases, this registry can be extended with:
-/// - Message direction validation (C→S, S→C, bidirectional)
-/// - Rate limiting per message type
-/// - Max message size validation
-/// - Default envelope flags per message type
+/// Stores registered route IDs and schema hashes for validation.
 #[derive(Debug, Default)]
 pub struct MessageRegistry {
     /// Registered message route IDs and their schema hashes

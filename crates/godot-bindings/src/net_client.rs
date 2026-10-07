@@ -281,12 +281,9 @@ impl NetClient {
         }
     }
 
-    /// Get current round-trip time (RTT) in milliseconds
-    ///
-    /// Returns -1.0 if not connected or no RTT measurement available
+    /// Returns -1.0: this binding does not expose the client's RTT measurement.
     #[func]
     pub fn get_rtt(&self) -> f64 {
-        // TODO: Get actual RTT from client
         -1.0
     }
 

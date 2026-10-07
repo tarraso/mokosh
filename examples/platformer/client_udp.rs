@@ -15,6 +15,7 @@ use mokosh_client::transport::udp::UdpClient;
 use mokosh_client::transport::{ReliableLink, Transport};
 use mokosh_client::{Client, ClientConfig};
 use mokosh_examples_shared::platformer::{GameState, PlayerInput};
+use mokosh_examples_shared::DEMO_UDP_PSK;
 use mokosh_protocol::compression::NoCompressor;
 use mokosh_protocol::encryption::NoEncryptor;
 use mokosh_protocol::{
@@ -41,9 +42,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start the UDP transport, wrapped in the reliability decorator (the Client
     // event loop is reliability-agnostic; the link adds ACK/retransmit/ordering).
+    // The UDP transport derives per-session, per-direction keys from the shared
+    // PSK and authenticates every datagram against session/direction/sequence;
+    // `require_encryption(true)` refuses to run without a key.
     tokio::spawn(async move {
         let transport = ReliableLink::new(
-            UdpClient::new(SERVER_ADDR.to_string()),
+            UdpClient::new(SERVER_ADDR.to_string())
+                .with_datagram_encryption(DEMO_UDP_PSK)
+                .require_encryption(true),
             ReliabilityConfig::default(),
         );
         if let Err(e) = transport.run(from_transport_tx, to_transport_rx).await {
@@ -77,10 +83,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("✅ Connected; streaming inputs and snapshots for {DEMO_SECS}s...\n");
 
-    // NOTE: inputs are sent by pushing raw envelopes onto the transport's outgoing
-    // channel. `Client::run()` consumes the client, so app->server sends currently
-    // go around it (see doc/TODO.md, "Route client outgoing through Client").
-    // Unreliable (empty flags) is the idiomatic choice for per-frame inputs anyway.
+    // Per-frame inputs go directly to the transport's outgoing channel, bypassing
+    // the Client's reliability tracking. Empty flags select unreliable delivery.
     let mut input_interval = tokio::time::interval(Duration::from_millis(50));
     let deadline = tokio::time::sleep(Duration::from_secs(DEMO_SECS));
     tokio::pin!(deadline);

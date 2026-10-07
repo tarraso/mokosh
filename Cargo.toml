@@ -16,7 +16,7 @@ name = "mokosh"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/yourusername/mokosh"
+repository = "https://github.com/tarraso/mokosh"
 authors = ["Mokosh Contributors"]
 
 [features]
@@ -182,7 +182,7 @@ harness = false
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/yourusername/mokosh"
+repository = "https://github.com/tarraso/mokosh"
 authors = ["Mokosh Contributors"]
 
 [workspace.dependencies]

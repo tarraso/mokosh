@@ -12,6 +12,7 @@ pkill -f "platformer_server|Godot" 2>/dev/null
 # Determine paths based on where script is run from
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+GODOT_BIN="${GODOT_BIN:-godot}"
 
 # Start server in background (from repo root)
 echo "🚀 Starting server..."
@@ -24,7 +25,7 @@ sleep 2
 
 # Start Godot client
 echo "🎮 Starting Godot client..."
-/Applications/Godot.app/Contents/MacOS/Godot --path "$SCRIPT_DIR/godot-client" > /tmp/platformer_client.log 2>&1 &
+"$GODOT_BIN" --path "$SCRIPT_DIR/godot-client" > /tmp/platformer_client.log 2>&1 &
 GODOT_PID=$!
 
 echo "✅ Demo started!"

@@ -5,9 +5,9 @@
 
 set -e
 
-PROJECT_DIR="/Users/taras/projects/gdrust/godot-netlink"
-GODOT_PROJECT="$PROJECT_DIR/examples/godot-demo"
-GODOT_BIN="/Applications/Godot.app/Contents/MacOS/Godot"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GODOT_PROJECT="$PROJECT_DIR/examples/platformer/godot-client"
+GODOT_BIN="${GODOT_BIN:-godot}"
 
 # Default values
 NUM_CLIENTS=2
@@ -89,7 +89,7 @@ echo ""
 # Start server
 echo "🚀 Starting Rust server..."
 cd "$PROJECT_DIR"
-cargo run --example test_server --quiet 2>&1 &
+cargo run --example platformer_server --quiet 2>&1 &
 SERVER_PID=$!
 echo "  Server PID: $SERVER_PID"
 

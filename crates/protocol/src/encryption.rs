@@ -31,7 +31,6 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 /// Encryption errors
@@ -56,9 +55,39 @@ pub enum EncryptionError {
     /// Ciphertext too short (missing nonce)
     #[error("Ciphertext too short: expected at least {min} bytes, got {actual}")]
     CiphertextTooShort { min: usize, actual: usize },
+
+    /// Authentic record whose counter was already seen or is too old to verify
+    #[error("Replayed or stale record counter: {0}")]
+    ReplayDetected(u64),
 }
 
 pub type EncryptionResult<T> = Result<T, EncryptionError>;
+
+/// Draws a random 96-bit AEAD nonce from the OS CSPRNG (`getrandom`).
+///
+/// Returns an error instead of falling back to any derived value if the CSPRNG
+/// fails: callers must drop the message rather than risk nonce reuse, which voids
+/// both confidentiality and authentication for ChaCha20-Poly1305.
+///
+/// # Nonce-collision budget (random nonces)
+///
+/// With random 96-bit nonces the birthday bound governs collisions, counted
+/// **per key, aggregated over all sessions and both directions** (every peer that
+/// shares the key draws from the same 2^96 space):
+///
+/// - collision probability ≈ n² / 2^97 for n messages;
+/// - ≈ 2^-32 at only ~2^32 messages (not 2^48);
+/// - ≈ 39% at 2^48 messages.
+///
+/// So a single shared key should be rotated well before ~2^32 total messages. The
+/// UDP record layer ([`crate::udp_record`]) avoids the bound for session traffic
+/// by using per-session, per-direction counter nonces.
+pub fn random_nonce() -> EncryptionResult<[u8; 12]> {
+    let mut nonce = [0u8; 12];
+    getrandom::getrandom(&mut nonce)
+        .map_err(|e| EncryptionError::NonceGenerationFailed(e.to_string()))?;
+    Ok(nonce)
+}
 
 /// Encryption type identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -118,7 +147,7 @@ impl Encryptor for NoEncryptor {
 ///
 /// Encrypted payload = nonce (12 bytes) + ciphertext + tag (16 bytes)
 ///
-/// - Nonce: timestamp (8 bytes) + random (4 bytes) = 12 bytes
+/// - Nonce: 12 random bytes from the OS CSPRNG (see [`random_nonce`])
 /// - Ciphertext: encrypted plaintext
 /// - Tag: authentication tag (16 bytes, appended by AEAD)
 #[derive(Clone)]
@@ -148,39 +177,12 @@ impl ChaCha20Poly1305Encryptor {
         let cipher = ChaCha20Poly1305::new(key.into());
         Self { cipher }
     }
-
-    /// Generates a unique nonce for encryption
-    ///
-    /// Nonce = timestamp (8 bytes, big-endian) + random (4 bytes)
-    ///
-    /// This ensures uniqueness by combining:
-    /// - Timestamp: monotonically increasing (prevents reuse)
-    /// - Random: adds entropy (prevents predictability)
-    fn generate_nonce(&self) -> EncryptionResult<[u8; 12]> {
-        let mut nonce_bytes = [0u8; 12];
-
-        // First 8 bytes: timestamp in microseconds
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| EncryptionError::NonceGenerationFailed(e.to_string()))?
-            .as_micros() as u64;
-
-        nonce_bytes[0..8].copy_from_slice(&timestamp.to_be_bytes());
-
-        // Last 4 bytes: random
-        // For production, use a secure RNG (e.g., getrandom)
-        // For now, we use timestamp lower bits XOR with a simple counter
-        let random = ((timestamp as u32) ^ (timestamp >> 32) as u32).to_be_bytes();
-        nonce_bytes[8..12].copy_from_slice(&random);
-
-        Ok(nonce_bytes)
-    }
 }
 
 impl Encryptor for ChaCha20Poly1305Encryptor {
     fn encrypt(&self, plaintext: &[u8]) -> EncryptionResult<Bytes> {
-        // Generate unique nonce
-        let nonce_bytes = self.generate_nonce()?;
+        // Random nonce from the CSPRNG (see `random_nonce` for the key-rotation budget).
+        let nonce_bytes = random_nonce()?;
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         // Encrypt + authenticate

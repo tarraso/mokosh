@@ -15,14 +15,12 @@ Multiplayer 2D platformer built with **Bevy** game engine and **Mokosh** network
 
 ### Client (`client.rs`)
 - **Bevy App** with ECS systems
-- **Components**: `PlayerEntity`, `BoxEntity`, `LocalPlayer`
-- **Resources**: `NetworkClient`, `GameEntities`, `InputState`
+- **Components**: `PlayerEntity`, `BoxEntity`, `LocalPlayerMarker`, `GroundLine`
+- **Resources**: `NetworkClient`, `GameEntities`, `LocalSessionId`, `MessageCounter`
 - **Systems**:
   - `setup_system` - Initialize camera and ground
-  - `input_system` - Capture keyboard input
-  - `network_send_system` - Send `PlayerInput` to server
-  - `network_receive_system` - Receive `GameState` from server
-  - `update_visual_system` - Update sprite positions
+  - `input_system` - Capture keyboard input and send `PlayerInput`
+  - `network_receive_system` - Receive `GameState` and update sprites
 
 ### Server (`server.rs`)
 - **WebSocket Server** on port 8080
@@ -65,19 +63,32 @@ cargo run --example bevy_platformer_server --features native
 
 **Terminal 2: Build and Serve WASM Client (Trunk)**
 ```bash
-trunk serve
+trunk serve --example bevy_platformer_client_wasm --no-default-features --features wasm
 ```
 
 Then open **http://localhost:8000** in your browser!
 
-> **Note**: Trunk automatically builds, optimizes, and serves the WASM client with hot-reload support.
-> Install with: `cargo install trunk`
+Install Trunk with `cargo install trunk` and add the WASM target with
+`rustup target add wasm32-unknown-unknown`. Run Trunk from the repository root;
+[Trunk.toml](../../Trunk.toml) points to [web/index.html](web/index.html).
+
+### UDP Clients
+
+```bash
+# Terminal 1
+cargo run --example bevy_platformer_server_udp
+
+# Terminal 2
+cargo run --example bevy_platformer_client_udp
+```
+
+The UDP pair enables reliability and authenticated datagrams using the shared
+demonstration PSK in [examples-shared](../../crates/examples-shared/src/lib.rs).
 
 ## Controls
 
 - **Arrow Keys** / **WASD**: Move left/right
 - **Space**: Jump
-- **ESC**: Close window
 
 ## Visual Guide
 
@@ -97,25 +108,27 @@ Then open **http://localhost:8000** in your browser!
 
 2. **Input → Server**:
    - `input_system` captures keyboard input
-   - `network_send_system` sends `PlayerInput` (JSON codec)
+   - `input_system` sends `PlayerInput` (JSON codec)
    - Server applies input to player
 
 3. **Server → Visuals**:
    - Server broadcasts `GameState` at 60 FPS
    - `network_receive_system` spawns/despawns entities
-   - `update_visual_system` updates sprite positions
+   - `network_receive_system` updates sprite positions
 
 ### ECS Design
 
 **Components**:
 - `PlayerEntity` - Player marker; IDs live in the `GameEntities` resource
 - `BoxEntity` - Box marker; IDs live in the `GameEntities` resource
-- `LocalPlayer` - Tag for local player (blue color)
+- `LocalPlayerMarker` - Tag for local player (blue color)
+- `GroundLine` - Ground marker
 
 **Resources**:
-- `NetworkClient` - WebSocket channels and session ID
+- `NetworkClient` - WebSocket channels
 - `GameEntities` - HashMap of entity IDs for players/boxes
-- `InputState` - Current keyboard state
+- `LocalSessionId` - Session ID assigned by the server
+- `MessageCounter` - Counter for outgoing message IDs
 
 ### Physics Constants
 
@@ -131,17 +144,8 @@ Then open **http://localhost:8000** in your browser!
 | **Client** | GDScript + GDExtension | Rust (Bevy ECS) |
 | **Rendering** | Godot 4 | Bevy 2D sprites |
 | **Input** | Godot Input API | Bevy `ButtonInput<KeyCode>` |
-| **Server** | Same (`platformer/server.rs`) | Same (shared code) |
-| **Simulation** | Same (`platformer/simulation.rs`) | Same (shared code) |
-
-## Future Enhancements
-
-- **Client-side Prediction**: Reduce input latency
-- **Interpolation**: Smooth movement between snapshots
-- **Camera Follow**: Track local player
-- **Sprites/Textures**: Replace colored squares
-- **Sound Effects**: Jump, box push, etc.
-- **UI Overlay**: Show FPS, ping, player count
+| **Server** | [platformer/server.rs](../platformer/server.rs) | [server.rs](server.rs) |
+| **Simulation** | [Shared platformer simulation](../../crates/examples-shared/src/platformer.rs) | Same shared simulation |
 
 ## Dependencies
 
@@ -165,8 +169,7 @@ Then open **http://localhost:8000** in your browser!
 
 **Visual glitches?**
 - Server sends snapshots at 60 FPS
-- Add interpolation for smoother movement
-- Consider client-side prediction
+- Check the received snapshots and sprite updates in `network_receive_system`
 
 ## License
 

@@ -28,8 +28,9 @@
 use bytes::Bytes;
 use mokosh_protocol::messages::routes;
 use mokosh_protocol::{
-    Envelope, EnvelopeFlags, SessionEnvelope, SessionId, UdpAddressChallenge, UdpAddressResponse,
-    UDP_ADDRESS_COOKIE_SIZE,
+    BootstrapRecords, Envelope, EnvelopeFlags, RecordKey, Role, SessionEnvelope, SessionId,
+    SessionRecords, UdpAddressChallenge, UdpAddressResponse, EPOCH_BOOTSTRAP, EPOCH_SESSION,
+    SESSION_RANDOM_SIZE, UDP_ADDRESS_COOKIE_SIZE,
 };
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -52,6 +53,9 @@ const ADDRESS_COOKIE_VERSION: u8 = 1;
 
 /// Domain separation for the keyed cookie authenticator.
 const ADDRESS_COOKIE_DOMAIN: &[u8] = b"mokosh-udp-address-cookie-v1";
+
+/// Domain separation for the stateless server key-agreement random.
+const SERVER_RANDOM_DOMAIN: &[u8] = b"mokosh-udp-server-random-v1";
 
 /// Configuration for the mandatory UDP return-path validation exchange.
 #[derive(Debug, Clone)]
@@ -217,8 +221,8 @@ impl AddressCookieSigner {
         let tag = self.tag(peer_addr, hello, issued_at_ms);
         let mut cookie = [0u8; UDP_ADDRESS_COOKIE_SIZE];
         cookie[0] = ADDRESS_COOKIE_VERSION;
-        cookie[1..9].copy_from_slice(&issued_at_ms.to_be_bytes());
-        cookie[9..].copy_from_slice(tag.as_bytes());
+        cookie[COOKIE_ISSUED_AT].copy_from_slice(&issued_at_ms.to_be_bytes());
+        cookie[COOKIE_TAG].copy_from_slice(tag.as_bytes());
         cookie
     }
 
@@ -233,7 +237,7 @@ impl AddressCookieSigner {
             return false;
         }
 
-        let issued_at_ms = u64::from_be_bytes(cookie[1..9].try_into().expect("fixed cookie"));
+        let issued_at_ms = cookie_issued_at_ms(cookie);
         let now_ms = self.elapsed_millis(now);
         if issued_at_ms > now_ms
             || now_ms.saturating_sub(issued_at_ms) > duration_millis(self.lifetime)
@@ -241,7 +245,23 @@ impl AddressCookieSigner {
             return false;
         }
 
-        self.tag(peer_addr, hello, issued_at_ms) == cookie[9..]
+        self.tag(peer_addr, hello, issued_at_ms) == *cookie_tag(cookie)
+    }
+
+    /// Deterministically derives the server's key-agreement random for a
+    /// handshake, bound to the same `(peer, hello, issued_at_ms)` as the cookie.
+    /// Because it is recomputed from the cookie's embedded timestamp (echoed in
+    /// the response), the server stays stateless until the session is created yet
+    /// derives the same `server_random` it sent in the challenge.
+    fn server_random(
+        &self,
+        peer_addr: SocketAddr,
+        hello: &Envelope,
+        issued_at_ms: u64,
+    ) -> [u8; SESSION_RANDOM_SIZE] {
+        *self
+            .keyed_hash(SERVER_RANDOM_DOMAIN, peer_addr, hello, issued_at_ms)
+            .as_bytes()
     }
 
     fn elapsed_millis(&self, now: Instant) -> u64 {
@@ -249,8 +269,20 @@ impl AddressCookieSigner {
     }
 
     fn tag(&self, peer_addr: SocketAddr, hello: &Envelope, issued_at_ms: u64) -> blake3::Hash {
+        self.keyed_hash(ADDRESS_COOKIE_DOMAIN, peer_addr, hello, issued_at_ms)
+    }
+
+    /// Keyed BLAKE3 over `(domain, normalized endpoint, issued_at_ms, hello)`.
+    /// The domain separates the cookie tag from the server random.
+    fn keyed_hash(
+        &self,
+        domain: &[u8],
+        peer_addr: SocketAddr,
+        hello: &Envelope,
+        issued_at_ms: u64,
+    ) -> blake3::Hash {
         let mut hasher = blake3::Hasher::new_keyed(&self.secret);
-        hasher.update(ADDRESS_COOKIE_DOMAIN);
+        hasher.update(domain);
         match normalized_endpoint(peer_addr) {
             SocketAddr::V4(addr) => {
                 hasher.update(&[4]);
@@ -273,6 +305,20 @@ fn duration_millis(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+/// Cookie layout: `[version: 1][issued_at_ms: 8 BE][tag: 32]`.
+const COOKIE_ISSUED_AT: std::ops::Range<usize> = 1..9;
+const COOKIE_TAG: std::ops::Range<usize> = 9..UDP_ADDRESS_COOKIE_SIZE;
+
+/// Reads the issue timestamp embedded in an address cookie.
+fn cookie_issued_at_ms(cookie: &[u8; UDP_ADDRESS_COOKIE_SIZE]) -> u64 {
+    u64::from_be_bytes(cookie[COOKIE_ISSUED_AT].try_into().expect("fixed cookie"))
+}
+
+/// The 32-byte keyed tag of an address cookie, unique per handshake.
+fn cookie_tag(cookie: &[u8; UDP_ADDRESS_COOKIE_SIZE]) -> &[u8; 32] {
+    cookie[COOKIE_TAG].try_into().expect("fixed cookie")
+}
+
 fn normalized_endpoint(addr: SocketAddr) -> SocketAddr {
     match addr {
         SocketAddr::V6(addr) => addr
@@ -292,6 +338,8 @@ pub struct UdpServer {
     addr: SocketAddr,
     session_rate_limit: UdpSessionRateLimitConfig,
     address_validation: UdpAddressValidationConfig,
+    psk: Option<[u8; 32]>,
+    require_encryption: bool,
 }
 
 impl UdpServer {
@@ -302,6 +350,8 @@ impl UdpServer {
             addr,
             session_rate_limit: UdpSessionRateLimitConfig::default(),
             address_validation: UdpAddressValidationConfig::default(),
+            psk: None,
+            require_encryption: false,
         }
     }
 
@@ -314,6 +364,28 @@ impl UdpServer {
     /// Overrides the mandatory UDP address-validation cookie lifetime.
     pub fn with_address_validation(mut self, config: UdpAddressValidationConfig) -> Self {
         self.address_validation = config;
+        self
+    }
+
+    /// Authenticates and encrypts every datagram using keys derived from the
+    /// given 32-byte pre-shared key. A short handshake (carried in the
+    /// address-validation exchange) derives **per-session, per-direction** keys,
+    /// and each datagram carries a monotonic counter checked against an anti-replay
+    /// window. This binds every datagram to a session, direction, and sequence, so
+    /// an attacker without the key cannot replay, redirect, or reflect captured
+    /// ciphertext. The client must use the same key. See
+    /// [`mokosh_protocol::udp_record`] for the full scheme and trust model.
+    pub fn with_datagram_encryption(mut self, psk: [u8; 32]) -> Self {
+        self.psk = Some(psk);
+        self
+    }
+
+    /// Requires a pre-shared key to be configured. When set, [`UdpServer::run`]
+    /// returns [`UdpServerError::EncryptionRequired`] if no key was provided via
+    /// [`with_datagram_encryption`](Self::with_datagram_encryption), rather than
+    /// silently accepting plaintext UDP.
+    pub fn require_encryption(mut self, required: bool) -> Self {
+        self.require_encryption = required;
         self
     }
 
@@ -334,6 +406,16 @@ impl UdpServer {
         mut outgoing_rx: mpsc::Receiver<SessionEnvelope>,
         ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> Result<(), UdpServerError> {
+        if self.require_encryption && self.psk.is_none() {
+            return Err(UdpServerError::EncryptionRequired);
+        }
+        let psk = self.psk;
+        let bootstrap = psk
+            .as_ref()
+            .map(|psk| BootstrapRecords::derive(psk, Role::Server));
+        // Per-session record-layer state, keyed by session id (epoch 1).
+        let mut session_records: HashMap<SessionId, SessionRecords> = HashMap::new();
+
         let mut cookie_secret = [0u8; 32];
         getrandom::getrandom(&mut cookie_secret)
             .map_err(|e| UdpServerError::RandomnessError(e.to_string()))?;
@@ -359,6 +441,15 @@ impl UdpServer {
         let mut addr_to_session: HashMap<SocketAddr, SessionId> = HashMap::new();
         let mut session_to_addr: HashMap<SessionId, SocketAddr> = HashMap::new();
         let mut admission = SessionAdmissionLimiter::new(self.session_rate_limit, Instant::now());
+        // Single-use handshakes: a fingerprint (cookie tag ++ client_random) of every
+        // address-response that created a session, with the instant consumed. A
+        // verbatim replay (same fingerprint) is rejected so it cannot resurrect a
+        // session with the same deterministic keys; a genuinely fresh handshake picks
+        // a new client_random and is unaffected even if it reuses a cookie minted in
+        // the same millisecond. Entries expire after the cookie lifetime, past which
+        // the cookie no longer validates anyway.
+        let mut consumed_handshakes: HashMap<[u8; 64], Instant> = HashMap::new();
+        let cookie_lifetime = self.address_validation.cookie_lifetime;
 
         let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
 
@@ -368,13 +459,93 @@ impl UdpServer {
                 recv_result = socket.recv_from(&mut buf) => {
                     match recv_result {
                         Ok((len, peer_addr)) => {
-                            let envelope = match Envelope::from_bytes(Bytes::copy_from_slice(&buf[..len])) {
+                            // Authenticate + decrypt the whole datagram first. Anything
+                            // that does not open (wrong key / wrong session / wrong
+                            // direction / replayed) is dropped before it can reach envelope
+                            // parsing, cookie validation, or session allocation — this is
+                            // what blocks on-path / same-NAT replay, redirection, reflection.
+                            // `from_bootstrap` records whether this datagram was opened with
+                            // the shared bootstrap key (epoch 0). Such datagrams are the
+                            // *handshake only* and must never carry established-session
+                            // control/game routes (see the route guard after parsing).
+                            let (datagram, from_bootstrap) = match bootstrap.as_ref() {
+                                None => (Bytes::copy_from_slice(&buf[..len]), false),
+                                Some(boot) => {
+                                    let raw = &buf[..len];
+                                    match RecordKey::peek_epoch(raw) {
+                                        Some(EPOCH_SESSION) => {
+                                            // Per-session key: requires an established session
+                                            // bound to this exact address.
+                                            let Some(&sid) = addr_to_session.get(&peer_addr) else {
+                                                tracing::debug!(
+                                                    peer = %peer_addr,
+                                                    "Dropping session datagram from unknown UDP peer"
+                                                );
+                                                continue;
+                                            };
+                                            let Some(records) = session_records.get_mut(&sid) else {
+                                                continue;
+                                            };
+                                            match records.open(raw) {
+                                                Ok(plain) => (plain, false),
+                                                Err(_) => {
+                                                    tracing::debug!(
+                                                        peer = %peer_addr,
+                                                        "Dropping unauthenticated or replayed UDP datagram"
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        Some(EPOCH_BOOTSTRAP) => {
+                                            // Handshake datagrams (HELLO / RESPONSE).
+                                            match boot.open(raw) {
+                                                Ok(plain) => (plain, true),
+                                                Err(_) => {
+                                                    tracing::debug!(
+                                                        peer = %peer_addr,
+                                                        "Dropping unauthenticated UDP handshake datagram"
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            tracing::debug!(
+                                                peer = %peer_addr,
+                                                "Dropping UDP datagram with unknown epoch"
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                }
+                            };
+
+                            let envelope = match Envelope::from_bytes(datagram) {
                                 Ok(envelope) => envelope,
                                 Err(e) => {
                                     tracing::error!(peer = %peer_addr, error = %e, "Failed to parse envelope");
                                     continue;
                                 }
                             };
+
+                            // The shared bootstrap key is for the handshake ONLY. Reject any
+                            // other route sealed at epoch 0 so an established session's control
+                            // or game traffic (e.g. DISCONNECT) cannot be carried on the
+                            // session-agnostic bootstrap key instead of its per-session key.
+                            if from_bootstrap
+                                && !matches!(
+                                    envelope.route_id,
+                                    routes::HELLO | routes::UDP_ADDRESS_RESPONSE
+                                )
+                            {
+                                tracing::debug!(
+                                    peer = %peer_addr,
+                                    route_id = envelope.route_id,
+                                    "Dropping non-handshake route sealed with the bootstrap key"
+                                );
+                                continue;
+                            }
 
                             // Transport-only validation messages never reach the
                             // protocol/reliability layers for an existing peer.
@@ -397,7 +568,16 @@ impl UdpServer {
                                 if envelope.route_id == routes::HELLO {
                                     let cookie =
                                         cookie_signer.issue(peer_addr, &envelope, Instant::now());
-                                    let challenge = UdpAddressChallenge { cookie };
+                                    let issued_at_ms = cookie_issued_at_ms(&cookie);
+                                    let server_random = cookie_signer.server_random(
+                                        peer_addr,
+                                        &envelope,
+                                        issued_at_ms,
+                                    );
+                                    let challenge = UdpAddressChallenge {
+                                        cookie,
+                                        server_random,
+                                    };
                                     let challenge_envelope = Envelope::new_simple(
                                         envelope.protocol_version,
                                         3,
@@ -407,7 +587,22 @@ impl UdpServer {
                                         EnvelopeFlags::empty(),
                                         challenge.to_bytes(),
                                     );
-                                    let challenge_bytes = challenge_envelope.to_bytes();
+                                    // Handshake replies are sealed at epoch 0 (bootstrap key,
+                                    // random nonce) because the per-session key does not exist yet.
+                                    let challenge_bytes = match bootstrap.as_ref() {
+                                        None => challenge_envelope.to_bytes(),
+                                        Some(boot) => match boot.seal(&challenge_envelope.to_bytes()) {
+                                            Ok(sealed) => sealed,
+                                            Err(e) => {
+                                                // Includes CSPRNG failure: drop, never reuse a nonce.
+                                                tracing::error!(error = %e, "Failed to seal UDP address challenge");
+                                                continue;
+                                            }
+                                        },
+                                    };
+                                    // Compare sealed sizes: the inbound `len` is also sealed,
+                                    // and AEAD adds a fixed overhead to both, so the ratio
+                                    // budget still holds.
                                     if challenge_bytes.len()
                                         <= len.saturating_mul(MAX_UNVALIDATED_AMPLIFICATION)
                                     {
@@ -478,7 +673,51 @@ impl UdpServer {
                                     continue;
                                 }
 
+                                // Single-use handshake: an address-response that already created
+                                // a session cannot create another. This stops a replayed response
+                                // (e.g. after the session closes) from resurrecting a session with
+                                // the same deterministic keys and reset counters. The fingerprint
+                                // includes client_random so a fresh handshake (new random) is not
+                                // blocked even if it reuses a same-millisecond cookie.
+                                let now = Instant::now();
+                                consumed_handshakes.retain(|_, consumed_at| {
+                                    now.saturating_duration_since(*consumed_at) < cookie_lifetime
+                                });
+                                let mut handshake_id = [0u8; 64];
+                                handshake_id[..32].copy_from_slice(cookie_tag(&response.cookie));
+                                handshake_id[32..].copy_from_slice(&response.client_random);
+                                if consumed_handshakes.contains_key(&handshake_id) {
+                                    tracing::debug!(
+                                        peer = %peer_addr,
+                                        "Dropping replayed UDP address response (handshake already consumed)"
+                                    );
+                                    continue;
+                                }
+                                consumed_handshakes.insert(handshake_id, now);
+
                                 let session_id = SessionId::new_v4();
+
+                                // Derive per-session keys from the PSK + both randoms.
+                                // `server_random` is recomputed statelessly from the cookie's
+                                // timestamp, matching what was sent in the challenge.
+                                if let Some(psk) = psk.as_ref() {
+                                    let issued_at_ms = cookie_issued_at_ms(&response.cookie);
+                                    let server_random = cookie_signer.server_random(
+                                        peer_addr,
+                                        &response.hello,
+                                        issued_at_ms,
+                                    );
+                                    session_records.insert(
+                                        session_id,
+                                        SessionRecords::derive(
+                                            psk,
+                                            &response.client_random,
+                                            &server_random,
+                                            Role::Server,
+                                        ),
+                                    );
+                                }
+
                                 addr_to_session.insert(peer_addr, session_id);
                                 session_to_addr.insert(session_id, peer_addr);
                                 tracing::info!(
@@ -500,6 +739,7 @@ impl UdpServer {
                             if is_disconnect {
                                 addr_to_session.remove(&peer_addr);
                                 session_to_addr.remove(&session_id);
+                                session_records.remove(&session_id);
                                 tracing::debug!(session = %session_id, "Removed session on client DISCONNECT");
                             }
                         }
@@ -524,9 +764,31 @@ impl UdpServer {
                     };
 
                     let is_disconnect = envelope.route_id == routes::DISCONNECT;
-                    let bytes = envelope.to_bytes();
-                    if let Err(e) = socket.send_to(&bytes, peer_addr).await {
-                        tracing::error!(peer = %peer_addr, error = %e, "Failed to send to UDP peer");
+                    // Seal outbound with the per-session key (epoch 1). If encryption is
+                    // on but the session has no record state, drop rather than leak plaintext.
+                    let wire = match bootstrap.as_ref() {
+                        None => Some(envelope.to_bytes()),
+                        Some(_) => match session_records.get_mut(&session_id) {
+                            Some(records) => match records.seal(&envelope.to_bytes()) {
+                                Ok(sealed) => Some(sealed),
+                                Err(e) => {
+                                    tracing::error!(error = %e, "Failed to seal outbound UDP datagram");
+                                    None
+                                }
+                            },
+                            None => {
+                                tracing::warn!(
+                                    session = %session_id,
+                                    "Dropping outbound: no session record state"
+                                );
+                                None
+                            }
+                        },
+                    };
+                    if let Some(bytes) = wire {
+                        if let Err(e) = socket.send_to(&bytes, peer_addr).await {
+                            tracing::error!(peer = %peer_addr, error = %e, "Failed to send to UDP peer");
+                        }
                     }
 
                     // Server closed the session: forget the mapping.
@@ -534,6 +796,7 @@ impl UdpServer {
                         if let Some(addr) = session_to_addr.remove(&session_id) {
                             addr_to_session.remove(&addr);
                         }
+                        session_records.remove(&session_id);
                         tracing::debug!(session = %session_id, "Removed session on server DISCONNECT");
                     }
                 }
@@ -560,6 +823,9 @@ pub enum UdpServerError {
 
     #[error("Failed to generate UDP address-validation secret: {0}")]
     RandomnessError(String),
+
+    #[error("UDP encryption is required but no authenticating datagram sealer was configured")]
+    EncryptionRequired,
 }
 
 #[cfg(test)]
@@ -656,7 +922,11 @@ mod tests {
         hello: Envelope,
     ) {
         let protocol_version = hello.protocol_version;
-        let response = UdpAddressResponse { cookie, hello };
+        let response = UdpAddressResponse {
+            cookie,
+            client_random: [0u8; SESSION_RANDOM_SIZE],
+            hello,
+        };
         let envelope = Envelope::new_simple(
             protocol_version,
             3,
@@ -986,5 +1256,365 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(120)).await;
         let reconnected = establish(&second, &mut incoming_rx).await;
         assert_ne!(reconnected.session_id, first_session);
+    }
+
+    // --- Per-session, per-direction datagram authentication (UDP security #3) ---
+
+    const TEST_PSK: [u8; 32] = [0x11; 32];
+
+    async fn spawn_sealed_server(
+        psk: [u8; 32],
+    ) -> (
+        SocketAddr,
+        mpsc::Receiver<SessionEnvelope>,
+        mpsc::Sender<SessionEnvelope>,
+    ) {
+        let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let (incoming_tx, incoming_rx) = mpsc::channel(16);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel(16);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+        let probe = UdpSocket::bind(bind).await.unwrap();
+        let bound_addr = probe.local_addr().unwrap();
+        drop(probe);
+
+        let server = UdpServer::new(bound_addr)
+            .with_datagram_encryption(psk)
+            .require_encryption(true);
+        tokio::spawn(async move {
+            let _ = server.run(incoming_tx, outgoing_rx, Some(ready_tx)).await;
+        });
+        ready_rx.await.unwrap();
+
+        (bound_addr, incoming_rx, outgoing_tx)
+    }
+
+    /// A minimal encrypted client built on the same record types as `UdpClient`,
+    /// exposing the raw wire bytes so tests can capture and replay opaque ciphertext.
+    struct SealedPeer {
+        socket: UdpSocket,
+        psk: [u8; 32],
+        bootstrap: BootstrapRecords,
+        /// Per-session records, set by `handshake`.
+        session: Option<SessionRecords>,
+        /// The last epoch-0 address-response wire bytes sent during `handshake`.
+        last_response_wire: Option<Bytes>,
+    }
+
+    impl SealedPeer {
+        async fn connect(server_addr: SocketAddr, psk: [u8; 32]) -> Self {
+            Self {
+                socket: connect_client(server_addr).await,
+                psk,
+                bootstrap: BootstrapRecords::derive(&psk, Role::Client),
+                session: None,
+                last_response_wire: None,
+            }
+        }
+
+        fn session(&mut self) -> &mut SessionRecords {
+            self.session.as_mut().expect("handshake first")
+        }
+
+        /// Runs the sealed HELLO → CHALLENGE → RESPONSE handshake, derives session
+        /// keys, and returns the `SessionId` the server assigned.
+        async fn handshake(
+            &mut self,
+            incoming_rx: &mut mpsc::Receiver<SessionEnvelope>,
+        ) -> SessionId {
+            let hello = hello_envelope();
+            let hello_wire = self.bootstrap.seal(&hello.to_bytes()).unwrap();
+            self.socket.send(&hello_wire).await.unwrap();
+
+            // Challenge (epoch 0).
+            let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
+            let len = timeout(Duration::from_secs(1), self.socket.recv(&mut buf))
+                .await
+                .unwrap()
+                .unwrap();
+            let chal_env = Envelope::from_bytes(self.bootstrap.open(&buf[..len]).unwrap()).unwrap();
+            assert_eq!(chal_env.route_id, routes::UDP_ADDRESS_CHALLENGE);
+            let challenge = UdpAddressChallenge::from_bytes(&chal_env.payload).unwrap();
+
+            // Derive per-session keys from both randoms.
+            let mut client_random = [0u8; SESSION_RANDOM_SIZE];
+            getrandom::getrandom(&mut client_random).unwrap();
+            self.session = Some(SessionRecords::derive(
+                &self.psk,
+                &client_random,
+                &challenge.server_random,
+                Role::Client,
+            ));
+
+            // Response (epoch 0).
+            let response = UdpAddressResponse {
+                cookie: challenge.cookie,
+                client_random,
+                hello: hello.clone(),
+            };
+            let resp_env = Envelope::new_simple(
+                hello.protocol_version,
+                3,
+                0,
+                routes::UDP_ADDRESS_RESPONSE,
+                0,
+                EnvelopeFlags::empty(),
+                response.to_bytes(),
+            );
+            let resp_wire = self.bootstrap.seal(&resp_env.to_bytes()).unwrap();
+            self.last_response_wire = Some(resp_wire.clone());
+            self.socket.send(&resp_wire).await.unwrap();
+
+            timeout(Duration::from_secs(1), incoming_rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .session_id
+        }
+
+        /// Seals an epoch-1 game datagram, returning the opaque wire bytes.
+        fn seal_game(&mut self, envelope: &Envelope) -> Bytes {
+            self.session().seal(&envelope.to_bytes()).unwrap()
+        }
+
+        async fn send_game(&mut self, envelope: &Envelope) {
+            let wire = self.seal_game(envelope);
+            self.socket.send(&wire).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn sealed_session_establishes_and_routes_both_ways() {
+        let (server_addr, mut incoming_rx, outgoing_tx) = spawn_sealed_server(TEST_PSK).await;
+        let mut peer = SealedPeer::connect(server_addr, TEST_PSK).await;
+
+        let session_id = peer.handshake(&mut incoming_rx).await;
+
+        // Client -> server game message round-trips through the record layer.
+        peer.send_game(&test_envelope(100, 1, b"hi")).await;
+        let delivered = timeout(Duration::from_secs(1), incoming_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivered.session_id, session_id);
+        assert_eq!(delivered.envelope.payload, Bytes::from_static(b"hi"));
+
+        // Server -> client is sealed epoch-1 and opens with the per-session key.
+        outgoing_tx
+            .send(SessionEnvelope::new(
+                session_id,
+                test_envelope(200, 2, b"pong"),
+            ))
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
+        let len = timeout(Duration::from_secs(1), peer.socket.recv(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        let received = Envelope::from_bytes(peer.session().open(&buf[..len]).unwrap()).unwrap();
+        assert_eq!(received.route_id, 200);
+        assert_eq!(received.payload, Bytes::from_static(b"pong"));
+    }
+
+    #[tokio::test]
+    async fn plaintext_hello_is_dropped_by_encrypted_server() {
+        let (server_addr, mut incoming_rx, _outgoing_tx) = spawn_sealed_server(TEST_PSK).await;
+        let client = connect_client(server_addr).await;
+
+        // Unauthenticated (plaintext) HELLO: dropped before parsing, no challenge,
+        // no session.
+        client.send(&hello_envelope().to_bytes()).await.unwrap();
+
+        let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
+        assert!(timeout(Duration::from_millis(150), client.recv(&mut buf))
+            .await
+            .is_err());
+        assert!(timeout(Duration::from_millis(150), incoming_rx.recv())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn wrong_key_handshake_is_dropped() {
+        let (server_addr, mut incoming_rx, _outgoing_tx) = spawn_sealed_server(TEST_PSK).await;
+        // A peer with the wrong PSK: its bootstrap-sealed HELLO fails to open.
+        let attacker = SealedPeer::connect(server_addr, [0x99; 32]).await;
+        let hello = hello_envelope();
+        let wire = attacker.bootstrap.seal(&hello.to_bytes()).unwrap();
+        attacker.socket.send(&wire).await.unwrap();
+
+        let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
+        assert!(
+            timeout(Duration::from_millis(150), attacker.socket.recv(&mut buf))
+                .await
+                .is_err()
+        );
+        assert!(timeout(Duration::from_millis(150), incoming_rx.recv())
+            .await
+            .is_err());
+    }
+
+    /// UDP security #3 (a): a datagram captured from session A, resent verbatim
+    /// from session B's address, must NOT be accepted as B's message. Per-session
+    /// keys make B's opener reject A's ciphertext.
+    #[tokio::test]
+    async fn captured_ciphertext_cannot_be_redirected_to_another_session() {
+        let (server_addr, mut incoming_rx, _outgoing_tx) = spawn_sealed_server(TEST_PSK).await;
+        let mut a = SealedPeer::connect(server_addr, TEST_PSK).await;
+        let mut b = SealedPeer::connect(server_addr, TEST_PSK).await;
+        let sid_a = a.handshake(&mut incoming_rx).await;
+        let sid_b = b.handshake(&mut incoming_rx).await;
+        assert_ne!(sid_a, sid_b);
+
+        // A sends a game packet; capture its opaque ciphertext.
+        let captured = a.seal_game(&test_envelope(100, 1, b"from-A"));
+        a.socket.send(&captured).await.unwrap();
+        let delivered = timeout(Duration::from_secs(1), incoming_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivered.session_id, sid_a);
+
+        // Attacker replays A's exact bytes from B's socket. Must be dropped.
+        b.socket.send(&captured).await.unwrap();
+        assert!(timeout(Duration::from_millis(200), incoming_rx.recv())
+            .await
+            .is_err());
+    }
+
+    /// UDP security #3 (b): an old sealed DISCONNECT replayed after the peer
+    /// reconnects must NOT tear down the new session (new per-session keys).
+    #[tokio::test]
+    async fn stale_disconnect_cannot_kill_reconnected_session() {
+        let (server_addr, mut incoming_rx, _outgoing_tx) = spawn_sealed_server(TEST_PSK).await;
+        let mut peer = SealedPeer::connect(server_addr, TEST_PSK).await;
+        let sid1 = peer.handshake(&mut incoming_rx).await;
+
+        // Capture a sealed DISCONNECT and deliver it (tears down session 1).
+        let captured_disconnect = peer.seal_game(&test_envelope(routes::DISCONNECT, 0, b"{}"));
+        peer.socket.send(&captured_disconnect).await.unwrap();
+        let delivered = timeout(Duration::from_secs(1), incoming_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivered.session_id, sid1);
+        assert_eq!(delivered.envelope.route_id, routes::DISCONNECT);
+
+        // Reconnect on the SAME socket → new session, new keys.
+        let sid2 = peer.handshake(&mut incoming_rx).await;
+        assert_ne!(sid2, sid1);
+
+        // Replay the OLD DISCONNECT ciphertext: new session's key rejects it.
+        peer.socket.send(&captured_disconnect).await.unwrap();
+        assert!(timeout(Duration::from_millis(200), incoming_rx.recv())
+            .await
+            .is_err());
+
+        // A fresh (new-key) game message on the reconnected session still works.
+        peer.send_game(&test_envelope(101, 1, b"after")).await;
+        let after = timeout(Duration::from_secs(1), incoming_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.session_id, sid2);
+        assert_eq!(after.envelope.payload, Bytes::from_static(b"after"));
+    }
+
+    /// Replaying a peer's own captured epoch-1 datagram within the same session is
+    /// rejected by the anti-replay window.
+    #[tokio::test]
+    async fn replayed_session_datagram_is_dropped() {
+        let (server_addr, mut incoming_rx, _outgoing_tx) = spawn_sealed_server(TEST_PSK).await;
+        let mut peer = SealedPeer::connect(server_addr, TEST_PSK).await;
+        let sid = peer.handshake(&mut incoming_rx).await;
+
+        let captured = peer.seal_game(&test_envelope(100, 1, b"once"));
+        peer.socket.send(&captured).await.unwrap();
+        let first = timeout(Duration::from_secs(1), incoming_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.session_id, sid);
+
+        // Exact same datagram again: dropped by the replay window.
+        peer.socket.send(&captured).await.unwrap();
+        assert!(timeout(Duration::from_millis(200), incoming_rx.recv())
+            .await
+            .is_err());
+    }
+
+    /// Replaying a captured address-response after the session closes must NOT
+    /// re-establish a session with the same (deterministic) keys — the cookie is
+    /// single-use.
+    #[tokio::test]
+    async fn replayed_handshake_cannot_resurrect_session() {
+        let (server_addr, mut incoming_rx, _outgoing_tx) = spawn_sealed_server(TEST_PSK).await;
+        let mut peer = SealedPeer::connect(server_addr, TEST_PSK).await;
+        let sid1 = peer.handshake(&mut incoming_rx).await;
+        let captured_response = peer.last_response_wire.clone().unwrap();
+        // An old game packet captured under session 1's keys.
+        let old_game = peer.seal_game(&test_envelope(100, 1, b"old"));
+
+        // Close the session.
+        peer.send_game(&test_envelope(routes::DISCONNECT, 0, b"{}"))
+            .await;
+        let disc = timeout(Duration::from_secs(1), incoming_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(disc.session_id, sid1);
+        assert_eq!(disc.envelope.route_id, routes::DISCONNECT);
+
+        // Replay the captured RESPONSE: the cookie is already consumed → no new session.
+        peer.socket.send(&captured_response).await.unwrap();
+        assert!(timeout(Duration::from_millis(200), incoming_rx.recv())
+            .await
+            .is_err());
+
+        // Even if it had, the old game packet must not be accepted.
+        peer.socket.send(&old_game).await.unwrap();
+        assert!(timeout(Duration::from_millis(200), incoming_rx.recv())
+            .await
+            .is_err());
+    }
+
+    /// A control packet (e.g. DISCONNECT) sealed with the shared bootstrap key must
+    /// NOT be accepted for an established session — epoch 0 is handshake-only.
+    #[tokio::test]
+    async fn bootstrap_key_cannot_carry_session_control() {
+        let (server_addr, mut incoming_rx, _outgoing_tx) = spawn_sealed_server(TEST_PSK).await;
+        let mut peer = SealedPeer::connect(server_addr, TEST_PSK).await;
+        let sid = peer.handshake(&mut incoming_rx).await;
+
+        // DISCONNECT sealed with the bootstrap key (epoch 0) rather than the session key.
+        let disc = test_envelope(routes::DISCONNECT, 0, b"{}");
+        let boot_wire = peer.bootstrap.seal(&disc.to_bytes()).unwrap();
+        peer.socket.send(&boot_wire).await.unwrap();
+
+        // Dropped: not delivered as a DISCONNECT.
+        assert!(timeout(Duration::from_millis(200), incoming_rx.recv())
+            .await
+            .is_err());
+
+        // The session is still alive — a normal epoch-1 message is delivered.
+        peer.send_game(&test_envelope(100, 1, b"alive")).await;
+        let alive = timeout(Duration::from_secs(1), incoming_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(alive.session_id, sid);
+        assert_eq!(alive.envelope.payload, Bytes::from_static(b"alive"));
+    }
+
+    #[tokio::test]
+    async fn require_encryption_without_psk_errors() {
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let (incoming_tx, _incoming_rx) = mpsc::channel(1);
+        let (_outgoing_tx, outgoing_rx) = mpsc::channel(1);
+
+        let server = UdpServer::new(addr).require_encryption(true);
+        let result = server.run(incoming_tx, outgoing_rx, None).await;
+        assert!(matches!(result, Err(UdpServerError::EncryptionRequired)));
     }
 }
