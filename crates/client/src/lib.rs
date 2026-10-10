@@ -25,24 +25,32 @@
 //! ```
 
 mod compat;
+#[cfg(all(feature = "native", not(feature = "wasm")))]
+pub mod reconnect;
 pub mod transport;
 
 // Re-export compat for public API
 pub use compat::mpsc;
 
-use instant::{Duration, Instant};
+#[cfg(not(all(feature = "native", not(feature = "wasm"))))]
+use instant::Instant;
+#[cfg(any(feature = "native", feature = "wasm"))]
+use mokosh_protocol::messages::GAME_MESSAGES_START;
 use mokosh_protocol::{
     compression::{Compressor, NoCompressor},
     encryption::{Encryptor, NoEncryptor},
     messages::{
         routes, AuthRequest, AuthResponse, Disconnect, DisconnectReason, Hello, HelloError,
-        HelloOk, Ping, Pong, GAME_MESSAGES_START,
+        HelloOk, Ping, Pong,
     },
     reliability::{ExpiredMessage, ReliabilityConfig, ReliabilityMode},
     CodecType, ConnectionState, Envelope, EnvelopeFlags, MessageDropped, MessageRegistry,
     CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERSION,
 };
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(all(feature = "native", not(feature = "wasm")))]
+use tokio::time::Instant;
 
 // Import SinkExt whenever compat uses futures channels (WASM or featureless).
 #[cfg(not(all(feature = "native", not(feature = "wasm"))))]
@@ -84,6 +92,8 @@ impl Default for ClientConfig {
 /// A request handed to a running [`Client`] via [`ClientHandle`].
 #[derive(Debug)]
 enum ClientCommand {
+    #[cfg(all(feature = "native", not(feature = "wasm")))]
+    Control(Envelope),
     /// Send an already-codec-encoded game payload (route_id >= 100).
     SendGame {
         route_id: u16,
@@ -116,6 +126,28 @@ pub struct ClientHandle {
 }
 
 impl ClientHandle {
+    #[cfg(all(feature = "native", not(feature = "wasm")))]
+    pub(crate) fn send_control<T: serde::Serialize>(
+        &self,
+        codec: CodecType,
+        route: u16,
+        message: &T,
+    ) -> Result<(), ClientError> {
+        let payload = codec
+            .encode(message)
+            .map_err(|_| ClientError::InvalidMessage("Cannot encode resume control".into()))?;
+        self.cmd_tx
+            .try_send(ClientCommand::Control(Envelope::new_simple(
+                CURRENT_PROTOCOL_VERSION,
+                codec.id(),
+                0,
+                route,
+                0,
+                ReliabilityMode::ReliableOrdered.to_flags(),
+                payload,
+            )))
+            .map_err(|_| ClientError::ChannelSendError)
+    }
     /// Queues an already-codec-encoded game payload (route_id >= 100) for the
     /// running client to send with the given reliability `mode`. `ttl: None`
     /// uses the configured default. Non-blocking; returns `Err` only if the
@@ -203,6 +235,13 @@ where
     /// legacy/unwrapped path (server replay protection); when the transport is
     /// wrapped in `ReliableLink`, that decorator reassigns the sequence number.
     msg_id_counter: u64,
+
+    guest_resume: bool,
+    hello_started: Option<Instant>,
+    exit: Option<ClientExit>,
+    #[cfg(all(feature = "native", not(feature = "wasm")))]
+    connected_tx: Option<tokio::sync::watch::Sender<Option<HelloOk>>>,
+    resume_tx: Option<mpsc::Sender<Envelope>>,
 
     /// Last time a message was received (for connection timeout detection)
     last_received: Instant,
@@ -343,6 +382,12 @@ where
             control_codec,
             game_codec,
             msg_id_counter: 1,
+            guest_resume: false,
+            hello_started: None,
+            exit: None,
+            resume_tx: None,
+            #[cfg(all(feature = "native", not(feature = "wasm")))]
+            connected_tx: None,
             last_received: now,
             last_ping_sent: now,
             last_rtt: None,
@@ -355,6 +400,14 @@ where
             cmd_tx,
             cmd_rx,
         }
+    }
+
+    /// Observes accepted HELLO responses. `None` means no accepted handshake yet.
+    #[cfg(all(feature = "native", not(feature = "wasm")))]
+    pub fn subscribe_connected(&mut self) -> tokio::sync::watch::Receiver<Option<HelloOk>> {
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        self.connected_tx = Some(tx);
+        rx
     }
 
     /// Sets a channel that receives notifications about reliable messages that
@@ -377,6 +430,10 @@ where
     /// Executes a command received from a [`ClientHandle`] on the event loop.
     async fn process_command(&mut self, cmd: ClientCommand) {
         match cmd {
+            #[cfg(all(feature = "native", not(feature = "wasm")))]
+            ClientCommand::Control(envelope) => {
+                let _ = self.send(envelope).await;
+            }
             ClientCommand::SendGame {
                 route_id,
                 schema_hash,
@@ -393,11 +450,7 @@ where
                 }
             }
             ClientCommand::Disconnect { reason, message } => {
-                let disconnect = Disconnect { reason, message };
-                if let Err(e) = self
-                    .send_control_message(routes::DISCONNECT, &disconnect)
-                    .await
-                {
+                if let Err(e) = self.disconnect(reason, message).await {
                     tracing::warn!(error = %e, "Failed to send DISCONNECT via handle");
                 }
             }
@@ -407,6 +460,7 @@ where
     /// Initiates connection by sending HELLO message
     pub async fn connect(&mut self) -> Result<(), ClientError> {
         tracing::info!("Sending HELLO");
+        self.hello_started = Some(Instant::now());
 
         // Transition from Closed to Connecting
         self.state
@@ -421,6 +475,7 @@ where
             .unwrap_or(0);
 
         let hello = Hello {
+            guest_resume: self.guest_resume,
             protocol_version: CURRENT_PROTOCOL_VERSION,
             min_protocol_version: MIN_PROTOCOL_VERSION,
             codec_id: self.game_codec.id(),
@@ -447,6 +502,7 @@ where
     ) -> Result<(), ClientError> {
         tracing::info!(reason = ?reason, message = %message, "Disconnecting");
 
+        self.exit = Some(ClientExit::LocalDisconnect);
         let disconnect = Disconnect { reason, message };
         self.send_control_message(routes::DISCONNECT, &disconnect)
             .await?;
@@ -536,44 +592,49 @@ where
         Ok(())
     }
 
-    /// Runs the main event loop
-    ///
-    /// This method will block until the incoming channel is closed.
+    /// Runs the event loop, logging its terminal error for compatibility.
     #[cfg(all(feature = "native", not(feature = "wasm")))]
-    pub async fn run(mut self) {
-        // Interval for periodic tasks (keepalive check, timeout check)
-        let mut interval = crate::compat::time::interval(Duration::from_secs(1));
+    pub async fn run(self) {
+        if let Err(error) = self.run_until_closed().await {
+            tracing::error!(%error, "Client stopped");
+        }
+    }
 
+    /// Runs until disconnect, channel closure, or a terminal protocol/timeout error.
+    /// Malformed inbound packets are logged and discarded.
+    #[cfg(all(feature = "native", not(feature = "wasm")))]
+    pub async fn run_until_closed(mut self) -> Result<ClientExit, ClientError> {
+        let tick = Duration::from_secs(1)
+            .min(self.config.keepalive_interval)
+            .min(self.config.hello_timeout)
+            .min(self.config.connection_timeout)
+            .max(Duration::from_millis(1));
+        let mut interval = crate::compat::time::interval(tick);
         loop {
+            if let Some(exit) = self.exit.take() {
+                return Ok(exit);
+            }
             tokio::select! {
                 result = self.incoming_rx.recv() => {
-                    match result {
-                        Some(envelope) => {
-                            // Update last received time
-                            self.last_received = Instant::now();
-                            self.handle_envelope(envelope).await;
+                    let Some(envelope) = result else {
+                        return Ok(ClientExit::IncomingClosed);
+                    };
+                    self.last_received = Instant::now();
+                    if envelope.route_id < GAME_MESSAGES_START {
+                        if let Err(error) = self.handle_control_message(envelope).await {
+                            match error {
+                                ClientError::InvalidMessage(_) => {
+                                    tracing::warn!(%error, "Discarding malformed control message");
+                                }
+                                _ => return Err(error),
+                            }
                         }
-                        None => {
-                            tracing::info!("Client shutting down: incoming channel closed");
-                            break;
-                        }
+                    } else {
+                        self.handle_game_message(envelope).await;
                     }
                 }
-
-                _ = interval.tick() => {
-                    // Periodic tasks: check timeouts and send keepalive
-                    if let Err(e) = self.handle_periodic_tasks().await {
-                        tracing::error!(error = %e, "Periodic task error");
-                        break;
-                    }
-                }
-
-                // App sends arriving via a ClientHandle (routed through the client
-                // so codec/compression/encryption apply). The client keeps its own
-                // `cmd_tx`, so this never resolves to `None` from dropped handles.
-                Some(cmd) = self.cmd_rx.recv() => {
-                    self.process_command(cmd).await;
-                }
+                _ = interval.tick() => self.handle_periodic_tasks().await?,
+                Some(cmd) = self.cmd_rx.recv() => self.process_command(cmd).await,
             }
         }
     }
@@ -635,7 +696,9 @@ where
 
         // Check HELLO timeout
         if self.state == ConnectionState::HelloSent
-            && now.duration_since(self.last_received) > self.config.hello_timeout
+            && self
+                .hello_started
+                .is_some_and(|started| now.duration_since(started) >= self.config.hello_timeout)
         {
             tracing::error!("HELLO handshake timeout");
             return Err(ClientError::HelloTimeout);
@@ -643,7 +706,7 @@ where
 
         // Check connection timeout (only when connected)
         if self.state.is_connected() {
-            if now.duration_since(self.last_received) > self.config.connection_timeout {
+            if now.duration_since(self.last_received) >= self.config.connection_timeout {
                 tracing::error!("Connection timeout - no messages received");
                 return Err(ClientError::ConnectionTimeout);
             }
@@ -673,6 +736,7 @@ where
     }
 
     /// Handles a single incoming envelope
+    #[cfg(feature = "wasm")]
     async fn handle_envelope(&mut self, envelope: Envelope) {
         tracing::debug!(
             route_id = envelope.route_id,
@@ -706,6 +770,15 @@ where
     /// Dispatches a control message to its handler.
     async fn dispatch_control(&mut self, envelope: Envelope) -> Result<(), ClientError> {
         match envelope.route_id {
+            routes::RESUME_ACCEPTED
+            | routes::RESUME_ERROR
+            | routes::RESUME_SNAPSHOT
+            | routes::RESUME_READY => {
+                if let Some(tx) = &mut self.resume_tx {
+                    let _ = tx.send(envelope).await;
+                }
+                Ok(())
+            }
             routes::HELLO_OK => self.handle_hello_ok(envelope).await,
             routes::HELLO_ERROR => self.handle_hello_error(envelope).await,
             routes::AUTH_RESPONSE => self.handle_auth_response(envelope).await,
@@ -767,19 +840,22 @@ where
             "HELLO_OK received"
         );
 
+        if self.state != ConnectionState::HelloSent {
+            return Ok(());
+        }
         // Both ends must agree on the reliability layer.
         if hello_ok.reliability != self.config.reliability.is_some() {
-            return Err(ClientError::InvalidMessage(format!(
-                "reliability mismatch: server={}, client={}",
-                hello_ok.reliability,
-                self.config.reliability.is_some()
-            )));
+            return Err(ClientError::ReliabilityMismatch);
         }
 
         // Transition to Connected state
         self.state
             .transition_to(ConnectionState::Connected)
             .map_err(|e| ClientError::InvalidStateTransition(e.to_string()))?;
+        #[cfg(all(feature = "native", not(feature = "wasm")))]
+        if let Some(tx) = &self.connected_tx {
+            tx.send_replace(Some(hello_ok));
+        }
         tracing::info!("Connection established");
 
         Ok(())
@@ -798,8 +874,7 @@ where
             "HELLO_ERROR received"
         );
 
-        // Stay in HelloSent (or could transition to Closed)
-        Ok(())
+        Err(ClientError::HelloRejected(hello_error))
     }
 
     /// Handles DISCONNECT message from server
@@ -814,6 +889,7 @@ where
             "DISCONNECT received from server"
         );
 
+        self.exit = Some(ClientExit::ServerDisconnect(disconnect));
         // Transition to Closed state
         self.state
             .transition_to(ConnectionState::Closed)
@@ -1172,9 +1248,23 @@ where
     }
 }
 
+/// Normal reasons for the native client loop to finish.
+#[derive(Debug)]
+pub enum ClientExit {
+    IncomingClosed,
+    LocalDisconnect,
+    ServerDisconnect(Disconnect),
+}
+
 /// Client errors
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
+    #[error("HELLO rejected: {0:?}")]
+    HelloRejected(HelloError),
+
+    #[error("Client and server reliability settings disagree")]
+    ReliabilityMismatch,
+
     #[error("Failed to send envelope through channel")]
     ChannelSendError,
 

@@ -162,6 +162,11 @@ harness = false
 name = "compression_bench"
 harness = false
 
+[[bench]]
+name = "session_routing_bench"
+harness = false
+required-features = ["native"]
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

@@ -287,6 +287,7 @@ async fn server_retransmits_then_drops_unacked_message() {
 
     // Connect via a HELLO (mirrors the real reliable client handshake).
     let hello = Hello {
+        guest_resume: false,
         protocol_version: CURRENT_PROTOCOL_VERSION,
         min_protocol_version: 1,
         codec_id: 1,

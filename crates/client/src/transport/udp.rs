@@ -100,6 +100,9 @@ impl UdpClient {
 
 #[async_trait]
 impl Transport for UdpClient {
+    fn protected_udp(&self) -> bool {
+        self.psk.is_some()
+    }
     type Error = UdpClientError;
 
     async fn run(
@@ -214,7 +217,7 @@ impl Transport for UdpClient {
                                                     error = %e,
                                                     "Failed to resend UDP address response"
                                                 );
-                                                break;
+                                                return Err(UdpClientError::SocketError(e.to_string()));
                                             }
                                             continue;
                                         }
@@ -310,7 +313,7 @@ impl Transport for UdpClient {
                                                 error = %e,
                                                 "Failed to send UDP address response"
                                             );
-                                            break;
+                                            return Err(UdpClientError::SocketError(e.to_string()));
                                         }
                                         continue;
                                     }
@@ -325,7 +328,7 @@ impl Transport for UdpClient {
                                     }
 
                                     if incoming_tx.send(envelope).await.is_err() {
-                                        tracing::error!("Failed to send envelope to event loop");
+                                        tracing::debug!("Client event loop closed");
                                         break;
                                     }
                                 }
@@ -336,12 +339,13 @@ impl Transport for UdpClient {
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "UDP receive error");
-                            break;
+                            return Err(UdpClientError::SocketError(e.to_string()));
                         }
                     }
                 }
 
-                Some(envelope) = outgoing_rx.recv() => {
+                outgoing = outgoing_rx.recv() => {
+                    let Some(envelope) = outgoing else { break; };
                     if envelope.route_id == routes::HELLO {
                         pending_hello = Some(envelope.clone());
                     } else if matches!(
@@ -379,7 +383,7 @@ impl Transport for UdpClient {
                         Some(bytes) => {
                             if let Err(e) = socket.send(&bytes).await {
                                 tracing::error!(error = %e, "Failed to send datagram");
-                                break;
+                                return Err(UdpClientError::SocketError(e.to_string()));
                             }
                         }
                         None => tracing::error!("Failed to seal outgoing UDP datagram"),

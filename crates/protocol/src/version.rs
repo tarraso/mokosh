@@ -17,11 +17,11 @@
 
 use crate::error::{ProtocolError, Result};
 
-/// Current protocol version (v1.0)
-pub const CURRENT_PROTOCOL_VERSION: u16 = 0x0100;
+/// Current protocol version (v2.0)
+pub const CURRENT_PROTOCOL_VERSION: u16 = 0x0200;
 
-/// Minimum supported protocol version (v1.0)
-pub const MIN_PROTOCOL_VERSION: u16 = 0x0100;
+/// Minimum supported protocol version (v2.0)
+pub const MIN_PROTOCOL_VERSION: u16 = 0x0200;
 
 /// Extracts the major version number
 #[inline]
@@ -203,9 +203,9 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, 0x0100);
-        assert_eq!(MIN_PROTOCOL_VERSION, 0x0100);
-        assert_eq!(major_version(CURRENT_PROTOCOL_VERSION), 1);
+        assert_eq!(CURRENT_PROTOCOL_VERSION, 0x0200);
+        assert_eq!(MIN_PROTOCOL_VERSION, 0x0200);
+        assert_eq!(major_version(CURRENT_PROTOCOL_VERSION), 2);
         assert_eq!(minor_version(CURRENT_PROTOCOL_VERSION), 0);
     }
 }

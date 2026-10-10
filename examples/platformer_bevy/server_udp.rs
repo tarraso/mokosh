@@ -103,6 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             result = server.tick() => {
                 if let Some(event) = result? {
                     match event {
+                        GameEvent::GuestCreated(_) | GameEvent::GuestSuspended(_) | GameEvent::SnapshotRequired { .. } | GameEvent::GuestResumed { .. } | GameEvent::GuestEnded(_) => {}
                         GameEvent::PlayerConnected(session_id) => {
                             platformer_sim.add_player(session_id);
                             println!("👤 Player {} joined (total: {})",

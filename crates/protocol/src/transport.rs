@@ -49,6 +49,9 @@ use async_trait::async_trait;
 #[cfg(feature = "wasm")]
 #[async_trait(?Send)]
 pub trait Transport: 'static {
+    fn protected_udp(&self) -> bool {
+        false
+    }
     /// Error type for this transport
     type Error: std::error::Error + 'static;
 
@@ -79,6 +82,10 @@ pub trait Transport: 'static {
 #[cfg(all(feature = "native", not(feature = "wasm")))]
 #[async_trait]
 pub trait Transport: Send + 'static {
+    /// True only for authenticated native UDP, including decorators.
+    fn protected_udp(&self) -> bool {
+        false
+    }
     /// Error type for this transport
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -109,6 +116,9 @@ pub trait Transport: Send + 'static {
 #[cfg(not(any(feature = "native", feature = "wasm")))]
 #[async_trait(?Send)]
 pub trait Transport: 'static {
+    fn protected_udp(&self) -> bool {
+        false
+    }
     /// Error type for this transport
     type Error: std::error::Error + 'static;
 

@@ -11,6 +11,7 @@ Mokosh is a Rust networking library for authoritative game servers, native clien
 - Reliability modes with acknowledgements, retransmission, sequencing and ordering.
 - ChaCha20-Poly1305 encryption and optional Zstd/Lz4 compression.
 - UDP address-validation cookies and authenticated records with session keys and replay protection.
+- Native reconnect coordinator with bounded retries, cancellation and generation-tagged messages.
 - Shared simulation helpers for client prediction and server reconciliation.
 - Godot 4 GDExtension client bindings and Bevy examples.
 
@@ -37,6 +38,19 @@ cargo run --example platformer_server_udp
 # Terminal 2
 cargo run --example platformer_client_udp
 ```
+
+The CLI client runs for two minutes and preserves its guest game session across network
+changes. Each transport gets a fresh `SessionId`, while `PlayerId` and the character survive
+for 60 seconds after server-side loss detection. Input resumes after the application applies
+and confirms a fresh authoritative snapshot. Server restart or session expiry produces an
+explicit failure; it never silently creates a replacement player. Resume is opt-in in the
+library and requires protected native UDP with reliability. Protocol 2.0 requires upgrading
+both endpoints.
+`mokosh_client::reconnect` provides the reusable Rust API.
+Retries default to 10 attempts or 60 seconds per recovery episode, with exponential
+backoff and jitter. A new episode starts only after a connection stays up for 10 seconds
+(`stable_after`), so a flapping server cannot cause unbounded reconnects. Offline sends are
+rejected rather than queued.
 
 For the graphical UDP client, use `bevy_platformer_server_udp` and `bevy_platformer_client_udp` instead. The UDP examples enable reliability and datagram encryption with a shared demonstration PSK. Use a separately generated secret key for your own deployment.
 
