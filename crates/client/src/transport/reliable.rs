@@ -98,6 +98,9 @@ impl PeerSet for SinglePeer {
 
 #[async_trait]
 impl<T: Transport> Transport for ReliableLink<T> {
+    fn protected_udp(&self) -> bool {
+        self.inner.protected_udp()
+    }
     type Error = T::Error;
 
     async fn run(
@@ -116,13 +119,6 @@ impl<T: Transport> Transport for ReliableLink<T> {
         let (inner_in_tx, inner_in_rx) = mpsc::channel::<Envelope>(LINK_BUFFER);
         let (inner_out_tx, inner_out_rx) = mpsc::channel::<Envelope>(LINK_BUFFER);
 
-        // Drive the wrapped transport as an independent task.
-        tokio::spawn(async move {
-            if let Err(e) = inner.run(inner_in_tx, inner_out_rx).await {
-                tracing::error!(error = %e, "ReliableLink inner transport error");
-            }
-        });
-
         // The shared bridge runs the reliability state machine below the loop.
         let bridge = Bridge::new(
             SinglePeer::new(&cfg),
@@ -132,9 +128,20 @@ impl<T: Transport> Transport for ReliableLink<T> {
             control_codec,
             retransmit_tick,
         );
-        bridge.run(app_out_rx, inner_in_rx).await;
-
-        Ok(())
+        let network = inner.run(inner_in_tx, inner_out_rx);
+        let bridge = bridge.run(app_out_rx, inner_in_rx);
+        tokio::pin!(network, bridge);
+        tokio::select! {
+            biased;
+            result = &mut network => result,
+            _ = &mut bridge => {
+                // Give the transport a bounded chance to drain the final DISCONNECT.
+                match tokio::time::timeout(Duration::from_millis(100), &mut network).await {
+                    Ok(result) => result,
+                    Err(_) => Ok(()),
+                }
+            }
+        }
     }
 }
 
@@ -184,6 +191,37 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    struct PendingInner(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for PendingInner {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    #[async_trait]
+    impl Transport for PendingInner {
+        type Error = std::io::Error;
+        async fn run(
+            self,
+            _incoming: mpsc::Sender<Envelope>,
+            _outgoing: mpsc::Receiver<Envelope>,
+        ) -> Result<(), Self::Error> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_link_drops_inner_transport_without_detached_task() {
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let link = ReliableLink::new(PendingInner(dropped.clone()), ReliabilityConfig::default());
+        let (incoming, _rx) = mpsc::channel(10);
+        let (_outgoing, rx) = mpsc::channel(10);
+        let task = tokio::spawn(link.run(incoming, rx));
+        tokio::task::yield_now().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     fn fast_cfg() -> ReliabilityConfig {

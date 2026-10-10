@@ -5,7 +5,7 @@
 //!
 //! This module is WASM-compatible and can be used by native and web clients.
 
-use mokosh_protocol::SessionId;
+use mokosh_protocol::PlayerId;
 use mokosh_protocol_derive::GameMessage;
 pub use mokosh_simulation::Simulation;
 use serde::{Deserialize, Serialize};
@@ -149,7 +149,7 @@ pub struct GameState {
 
 #[derive(Clone)]
 pub struct PlayerData {
-    pub session_id: SessionId,
+    pub player_id: PlayerId,
     pub position: Vec2,
     pub velocity: Vec2,
     pub on_ground: bool,
@@ -171,7 +171,7 @@ pub struct PhysicsBox {
 #[derive(Clone)]
 pub struct PlatformerSimulation {
     /// Player states by session ID
-    pub players: HashMap<SessionId, PlayerData>,
+    pub players: HashMap<PlayerId, PlayerData>,
     /// Dynamic boxes
     pub boxes: Vec<PhysicsBox>,
     /// Next box ID
@@ -221,11 +221,12 @@ impl PlatformerSimulation {
         });
     }
 
-    pub fn add_player(&mut self, session_id: SessionId) {
+    pub fn add_player(&mut self, player_id: impl Into<PlayerId>) {
+        let player_id = player_id.into();
         self.players.insert(
-            session_id,
+            player_id,
             PlayerData {
-                session_id,
+                player_id,
                 position: Vec2::new(100.0, 300.0),
                 velocity: Vec2::zero(),
                 on_ground: false,
@@ -233,12 +234,14 @@ impl PlatformerSimulation {
         );
     }
 
-    pub fn remove_player(&mut self, session_id: SessionId) {
-        self.players.remove(&session_id);
+    pub fn remove_player(&mut self, player_id: impl Into<PlayerId>) {
+        let player_id = player_id.into();
+        self.players.remove(&player_id);
     }
 
-    pub fn apply_input_to_player(&mut self, session_id: SessionId, input: &PlayerInput) {
-        if let Some(player) = self.players.get_mut(&session_id) {
+    pub fn apply_input_to_player(&mut self, player_id: impl Into<PlayerId>, input: &PlayerInput) {
+        let player_id = player_id.into();
+        if let Some(player) = self.players.get_mut(&player_id) {
             // Horizontal movement
             player.velocity.x = input.move_x * self.move_speed;
 
@@ -303,7 +306,7 @@ impl PlatformerSimulation {
 
     fn resolve_collisions(&mut self) {
         // Player-Box collisions (push boxes)
-        let player_ids: Vec<SessionId> = self.players.keys().copied().collect();
+        let player_ids: Vec<PlayerId> = self.players.keys().copied().collect();
 
         for &player_id in &player_ids {
             if let Some(player) = self.players.get(&player_id) {
@@ -460,8 +463,8 @@ impl Simulation for PlatformerSimulation {
         // Note: In a real implementation, you'd need to know which player this input is for
         // For now, we'll apply to the first player (single-player prediction)
         // Multi-player needs input tagging with player_id
-        if let Some((&session_id, _)) = self.players.iter().next() {
-            self.apply_input_to_player(session_id, input);
+        if let Some((&player_id, _)) = self.players.iter().next() {
+            self.apply_input_to_player(player_id, input);
         }
     }
 
@@ -475,7 +478,7 @@ impl Simulation for PlatformerSimulation {
                 .players
                 .values()
                 .map(|p| PlayerState {
-                    id: p.session_id.to_string(),
+                    id: p.player_id.to_string(),
                     position: p.position,
                     velocity: p.velocity,
                     on_ground: p.on_ground,
@@ -495,11 +498,21 @@ impl Simulation for PlatformerSimulation {
     }
 
     fn restore(&mut self, state: &GameState) {
+        // Replace old identities before applying the authoritative world.
+        self.players
+            .retain(|id, _| state.players.iter().any(|p| p.id == id.to_string()));
+        for p in &state.players {
+            if let Ok(id) = p.id.parse::<PlayerId>() {
+                if !self.players.contains_key(&id) {
+                    self.add_player(id);
+                }
+            }
+        }
         // Restore players
         for player_state in &state.players {
-            // Parse UUID string back to SessionId
-            if let Ok(session_id) = player_state.id.parse::<SessionId>() {
-                if let Some(player) = self.players.get_mut(&session_id) {
+            // Parse UUID string back to PlayerId
+            if let Ok(player_id) = player_state.id.parse::<PlayerId>() {
+                if let Some(player) = self.players.get_mut(&player_id) {
                     player.position = player_state.position;
                     player.velocity = player_state.velocity;
                     player.on_ground = player_state.on_ground;

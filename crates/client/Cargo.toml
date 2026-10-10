@@ -33,3 +33,6 @@ wasm-bindgen = { version = "0.2", optional = true }
 js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", features = ["WebSocket", "MessageEvent", "ErrorEvent", "BinaryType", "Blob", "CloseEvent"], optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

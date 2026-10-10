@@ -15,7 +15,9 @@ use mokosh_examples_shared::platformer::{PlatformerSimulation, PlayerInput, Simu
 use mokosh_examples_shared::DEMO_UDP_PSK;
 use mokosh_protocol::compression::NoCompressor;
 use mokosh_protocol::encryption::NoEncryptor;
-use mokosh_protocol::{CodecType, ReliabilityConfig, ReliabilityMode};
+use mokosh_protocol::{
+    resume::ResumeSnapshot, CodecType, GameMessage, ReliabilityConfig, ReliabilityMode,
+};
 use mokosh_server::transport::udp::UdpServer;
 use mokosh_server::transport::ReliableServerLink;
 use mokosh_server::{GameEvent, Server, ServerConfig};
@@ -60,6 +62,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Server with the reliability layer enabled (required for UDP). The handshake
     // negotiates reliability, so the client must also enable it.
     let config = ServerConfig {
+        guest_resume: Some(Default::default()),
+        keepalive_interval: Duration::from_secs(1),
+        connection_timeout: Duration::from_secs(3),
         reliability: Some(ReliabilityConfig::default()),
         ..Default::default()
     };
@@ -76,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let mut platformer_sim = PlatformerSimulation::new();
+    let mut snapshot_id = 0;
 
     println!("✅ Server running on udp://127.0.0.1:8080 (reliability ON, datagram encryption ON)");
     println!("📊 Initial boxes spawned: {}", platformer_sim.boxes.len());
@@ -107,6 +113,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             result = server.tick() => {
                 if let Some(event) = result? {
                     match event {
+                        GameEvent::GuestCreated(id) => platformer_sim.add_player(id),
+                        GameEvent::GuestEnded(id) => platformer_sim.remove_player(id),
+                        GameEvent::GuestSuspended(id) => platformer_sim.apply_input_to_player(id, &PlayerInput { move_x: 0.0, jump: false }),
+                        GameEvent::GuestResumed { player_id, session_id } => println!("Ready: player={player_id}, transport={session_id}"),
+                        GameEvent::SnapshotRequired { player_id, session_id } => {
+                            // Clear the last input during live handover, too; retain the body.
+                            platformer_sim.apply_input_to_player(player_id, &PlayerInput { move_x: 0.0, jump: false });
+                            snapshot_id += 1;
+                            let state = platformer_sim.snapshot();
+                            server.supply_resume_snapshot(player_id, session_id, ResumeSnapshot {
+                                snapshot_id, route_id: mokosh_examples_shared::platformer::GameState::ROUTE_ID,
+                                schema_hash: mokosh_examples_shared::platformer::GameState::SCHEMA_HASH,
+                                codec_id: 1, payload: serde_json::to_vec(&state)?,
+                            }).await?;
+                        }
                         GameEvent::PlayerConnected(session_id) => {
                             platformer_sim.add_player(session_id);
                             println!("👤 Player {} joined (total: {})",
@@ -122,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         GameEvent::GameMessage { session_id, envelope } => {
                             if envelope.route_id == 100 {
                                 if let Ok(input) = serde_json::from_slice::<PlayerInput>(&envelope.payload) {
-                                    platformer_sim.apply_input_to_player(session_id, &input);
+                                    if let Some(id) = server.player_id(session_id) { platformer_sim.apply_input_to_player(id, &input); }
                                 } else {
                                     eprintln!("Failed to decode PlayerInput from {}", session_id);
                                 }

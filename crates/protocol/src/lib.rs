@@ -87,6 +87,8 @@ pub use version::{negotiate_version, CURRENT_PROTOCOL_VERSION, MIN_PROTOCOL_VERS
 /// individual client connections. The SessionId is NOT part of the wire
 /// protocol - it's only used for internal message routing.
 pub type SessionId = uuid::Uuid;
+pub mod resume;
+pub use resume::PlayerId;
 
 /// Envelope tagged with a session ID for internal routing
 ///
@@ -117,6 +119,9 @@ pub struct SessionEnvelope {
 
     /// The actual envelope to send/receive
     pub envelope: Envelope,
+
+    /// Trusted in-process transport metadata, never decoded from wire flags.
+    pub protected_udp: bool,
 }
 
 impl SessionEnvelope {
@@ -125,6 +130,7 @@ impl SessionEnvelope {
         Self {
             session_id,
             envelope,
+            protected_udp: false,
         }
     }
 }

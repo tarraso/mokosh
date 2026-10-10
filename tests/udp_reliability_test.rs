@@ -56,6 +56,7 @@ fn json() -> CodecType {
 
 fn reliable_hello() -> Envelope {
     let hello = Hello {
+        guest_resume: false,
         protocol_version: CURRENT_PROTOCOL_VERSION,
         min_protocol_version: 1,
         codec_id: 1,

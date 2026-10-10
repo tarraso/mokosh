@@ -134,43 +134,47 @@ impl SessionPeers {
 
 impl PeerSet for SessionPeers {
     type Msg = SessionEnvelope;
-    type Key = SessionId;
+    type Key = (SessionId, bool);
 
-    fn split(msg: SessionEnvelope) -> (SessionId, Envelope) {
-        (msg.session_id, msg.envelope)
+    fn split(msg: SessionEnvelope) -> ((SessionId, bool), Envelope) {
+        ((msg.session_id, msg.protected_udp), msg.envelope)
     }
-    fn join(key: SessionId, env: Envelope) -> SessionEnvelope {
-        SessionEnvelope::new(key, env)
+    fn join(key: (SessionId, bool), env: Envelope) -> SessionEnvelope {
+        SessionEnvelope {
+            session_id: key.0,
+            envelope: env,
+            protected_udp: key.1,
+        }
     }
-    fn pipe_mut(&mut self, key: SessionId) -> &mut ReliablePipe {
+    fn pipe_mut(&mut self, key: (SessionId, bool)) -> &mut ReliablePipe {
         let cfg = &self.cfg;
         &mut self
             .sessions
-            .entry(key)
+            .entry(key.0)
             .or_insert_with(|| PerSession::new(cfg))
             .pipe
     }
-    fn remove(&mut self, key: SessionId) {
-        self.sessions.remove(&key);
+    fn remove(&mut self, key: (SessionId, bool)) {
+        self.sessions.remove(&key.0);
     }
-    fn for_each_pipe(&mut self, mut f: impl FnMut(SessionId, &mut ReliablePipe)) {
+    fn for_each_pipe(&mut self, mut f: impl FnMut((SessionId, bool), &mut ReliablePipe)) {
         for (sid, entry) in self.sessions.iter_mut() {
-            f(*sid, &mut entry.pipe);
+            f((*sid, false), &mut entry.pipe);
         }
     }
-    fn inbound_ready(&mut self, key: SessionId, env: &Envelope) -> bool {
+    fn inbound_ready(&mut self, key: (SessionId, bool), env: &Envelope) -> bool {
         let cfg = &self.cfg;
         let entry = self
             .sessions
-            .entry(key)
+            .entry(key.0)
             .or_insert_with(|| PerSession::new(cfg));
         // Withhold game traffic (drop, no ACK) until the handshake lands; control
         // (route < 100) always passes.
         env.route_id < GAME_MESSAGES_START || entry.established
     }
-    fn on_delivered(&mut self, key: SessionId, env: &Envelope) {
+    fn on_delivered(&mut self, key: (SessionId, bool), env: &Envelope) {
         if env.route_id == routes::HELLO {
-            if let Some(entry) = self.sessions.get_mut(&key) {
+            if let Some(entry) = self.sessions.get_mut(&key.0) {
                 entry.established = true;
             }
         }

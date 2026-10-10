@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 
 /// Control message route IDs (< 100)
 pub mod routes {
+    pub const RESUME_REQUEST: u16 = 50;
+    pub const RESUME_ACCEPTED: u16 = 51;
+    pub const RESUME_ERROR: u16 = 52;
+    pub const RESUME_SNAPSHOT: u16 = 53;
+    pub const SNAPSHOT_APPLIED: u16 = 54;
+    pub const RESUME_READY: u16 = 55;
     /// HELLO message (Client → Server): initial handshake
     pub const HELLO: u16 = 1;
 
@@ -75,6 +81,9 @@ pub const GAME_MESSAGES_START: u16 = 100;
 /// The client proposes its protocol version and indicates the minimum version it supports.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hello {
+    /// Request a guest session that survives fresh protected UDP transports.
+    #[serde(default)]
+    pub guest_resume: bool,
     /// Client's preferred protocol version
     pub protocol_version: u16,
 
@@ -316,6 +325,7 @@ mod tests {
     #[test]
     fn test_hello_serialization() {
         let hello = Hello {
+            guest_resume: false,
             protocol_version: 0x0100,
             min_protocol_version: 0x0100,
             codec_id: 1,

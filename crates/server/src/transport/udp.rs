@@ -730,7 +730,7 @@ impl UdpServer {
 
                             let is_disconnect = envelope.route_id == routes::DISCONNECT;
 
-                            if let Err(e) = incoming_tx.send(SessionEnvelope::new(session_id, envelope)).await {
+                            if let Err(e) = incoming_tx.send(SessionEnvelope { session_id, envelope, protected_udp: bootstrap.is_some() && !from_bootstrap }).await {
                                 tracing::error!(error = %e, "Failed to send envelope to event loop");
                                 break;
                             }

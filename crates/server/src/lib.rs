@@ -4,7 +4,10 @@
 //!
 //! Uses `tick()` method for non-blocking event processing.
 
+pub mod resume;
 pub mod transport;
+use mokosh_protocol::{resume::*, PlayerId};
+use resume::Guests;
 
 use mokosh_protocol::{
     auth::AuthProvider,
@@ -31,6 +34,17 @@ use tokio::sync::mpsc;
 /// (HELLO, PING, AUTH, etc.) are handled automatically by the server.
 #[derive(Debug)]
 pub enum GameEvent {
+    GuestCreated(PlayerId),
+    GuestSuspended(PlayerId),
+    SnapshotRequired {
+        player_id: PlayerId,
+        session_id: SessionId,
+    },
+    GuestResumed {
+        player_id: PlayerId,
+        session_id: SessionId,
+    },
+    GuestEnded(PlayerId),
     PlayerConnected(SessionId),
 
     PlayerDisconnected(SessionId),
@@ -60,6 +74,9 @@ pub enum GameEvent {
 /// - Security state (replay protection, rate limiting)
 #[derive(Debug)]
 struct SessionState {
+    protected_udp: bool,
+    guest_resume: bool,
+    ordinal: u64,
     /// Current connection state for this client
     state: ConnectionState,
 
@@ -98,6 +115,9 @@ impl SessionState {
     fn new(game_codec: CodecType, rate_limit_burst: u32) -> Self {
         let now = Instant::now();
         Self {
+            protected_udp: false,
+            guest_resume: false,
+            ordinal: 0,
             state: ConnectionState::Connecting,
             last_received: now,
             last_ping_sent: now,
@@ -115,9 +135,12 @@ impl SessionState {
 /// Server configuration
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
-    /// Maximum number of concurrent sessions, including sessions that have not
-    /// completed the HELLO handshake. New sessions are rejected once the limit
-    /// is reached. A value of 0 rejects all new sessions.
+    /// Opt-in in-memory guest resume; accepted only over protected UDP.
+    pub guest_resume: Option<resume::GuestResumeConfig>,
+    /// Maximum concurrent clients. With guest resume, detached guests reserve
+    /// this logical capacity and pending transports have a separate bounded cap.
+    /// Without resume, this includes transports still completing HELLO.
+    /// A value of 0 rejects all new clients.
     pub max_concurrent_sessions: usize,
 
     /// Timeout for HELLO handshake
@@ -156,6 +179,7 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            guest_resume: None,
             max_concurrent_sessions: 1024,
             hello_timeout: Duration::from_secs(5),
             keepalive_interval: Duration::from_secs(30),
@@ -197,6 +221,9 @@ where
     /// Map of active client sessions
     /// Each SessionId maps to a SessionState containing per-client data
     sessions: HashMap<SessionId, SessionState>,
+    guests: Guests,
+    next_ordinal: u64,
+    retired_transports: HashMap<SessionId, Instant>,
 
     /// Codec to use for control messages (default: JSON)
     control_codec: CodecType,
@@ -316,6 +343,9 @@ where
             incoming_rx,
             outgoing_tx,
             sessions: HashMap::new(), // Initially no connected clients
+            guests: Guests::default(),
+            next_ordinal: 0,
+            retired_transports: HashMap::new(),
             control_codec,
             default_game_codec: game_codec, // Default, overridden by client HELLO
             config,
@@ -327,6 +357,215 @@ where
             event_rx,
             periodic_interval,
         }
+    }
+
+    /// Resolve the logical identity of the current owner. Non-resumable peers use their transport UUID.
+    pub fn player_id(&self, session_id: SessionId) -> Option<PlayerId> {
+        self.guests.player(session_id).or_else(|| {
+            self.sessions
+                .get(&session_id)
+                .filter(|s| !s.guest_resume)
+                .map(|_| PlayerId(session_id))
+        })
+    }
+
+    fn retire_session(&mut self, session_id: SessionId, final_exit: bool) {
+        let Some(state) = self.sessions.remove(&session_id) else {
+            return;
+        };
+        if state.guest_resume {
+            let cap = self
+                .config
+                .max_concurrent_sessions
+                .saturating_mul(2)
+                .saturating_add(512);
+            if self.retired_transports.len() >= cap {
+                if let Some(oldest) = self
+                    .retired_transports
+                    .iter()
+                    .min_by_key(|(_, until)| *until)
+                    .map(|(id, _)| *id)
+                {
+                    self.retired_transports.remove(&oldest);
+                }
+            }
+            self.retired_transports
+                .insert(session_id, Instant::now() + Duration::from_secs(60));
+            if final_exit {
+                if let Some(id) = self.guests.player(session_id) {
+                    self.guests.remove(id, ResumeError::Revoked, Instant::now());
+                    let _ = self.event_tx.send(GameEvent::GuestEnded(id));
+                }
+            } else if let Some(cfg) = &self.config.guest_resume {
+                if let Some(id) = self.guests.detach(session_id, Instant::now(), cfg.grace) {
+                    let _ = self.event_tx.send(GameEvent::GuestSuspended(id));
+                }
+            }
+        } else {
+            let _ = self
+                .event_tx
+                .send(GameEvent::PlayerDisconnected(session_id));
+        }
+    }
+
+    /// Revoke a guest and erase its credential/cache even when detached.
+    pub async fn revoke_guest(&mut self, player_id: PlayerId) -> Result<(), ServerError> {
+        if !self.guests.contains(player_id) {
+            return Ok(());
+        }
+        let owner = self
+            .guests
+            .remove(player_id, ResumeError::Revoked, Instant::now());
+        let _ = self.event_tx.send(GameEvent::GuestEnded(player_id));
+        if let Some(session_id) = owner {
+            self.sessions.remove(&session_id);
+            self.send_control_message(
+                session_id,
+                routes::DISCONNECT,
+                &Disconnect {
+                    reason: DisconnectReason::ClientRequested,
+                    message: "Guest revoked".into(),
+                },
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Supply a freshly encoded authoritative snapshot for the current owner.
+    /// The app must first process GuestCreated/SnapshotRequired in event order.
+    pub async fn supply_resume_snapshot(
+        &mut self,
+        player_id: PlayerId,
+        session_id: SessionId,
+        snapshot: ResumeSnapshot,
+    ) -> Result<(), ServerError> {
+        if snapshot.payload.len() > MAX_RESUME_SNAPSHOT_BYTES
+            || snapshot.route_id < GAME_MESSAGES_START
+        {
+            return Err(ServerError::InvalidMessage(
+                "Invalid resume snapshot size or game route".into(),
+            ));
+        }
+        let encoded = self
+            .control_codec
+            .encode(&snapshot)
+            .map_err(|e| ServerError::CodecError(e.to_string()))?;
+        if encoded.len() > 65_000 {
+            return Err(ServerError::InvalidMessage(
+                "Resume snapshot exceeds UDP bound".into(),
+            ));
+        }
+        if self.guests.player(session_id) != Some(player_id) {
+            return Err(ServerError::InvalidMessage(
+                "Obsolete snapshot owner".into(),
+            ));
+        }
+        let Some(session) = self.guests.set_snapshot(player_id, snapshot.snapshot_id) else {
+            return Err(ServerError::InvalidMessage(
+                "No synchronizing owner for snapshot".into(),
+            ));
+        };
+        self.send_reliable_control_message(session, routes::RESUME_SNAPSHOT, &snapshot)
+            .await
+    }
+
+    async fn handle_resume_request(
+        &mut self,
+        session: SessionId,
+        envelope: Envelope,
+    ) -> Result<(), ServerError> {
+        let state = &self.sessions[&session];
+        if !state.guest_resume
+            || !state.protected_udp
+            || !state.state.is_connected()
+            || self.config.reliability.is_none()
+        {
+            return self
+                .send_reliable_control_message(
+                    session,
+                    routes::RESUME_ERROR,
+                    &ResumeError::Unsupported,
+                )
+                .await;
+        }
+        let request: ResumeRequest = match self.control_codec.decode(&envelope.payload) {
+            Ok(request) => request,
+            Err(_) => {
+                return self
+                    .send_reliable_control_message(
+                        session,
+                        routes::RESUME_ERROR,
+                        &ResumeError::InvalidToken,
+                    )
+                    .await
+            }
+        };
+        let existed = request.player_id.is_some();
+        let created_before = self.guests.len();
+        let max_guests = self
+            .config
+            .max_concurrent_sessions
+            .saturating_sub(self.sessions.values().filter(|s| !s.guest_resume).count());
+        match self
+            .guests
+            .bind(session, state.ordinal, request, max_guests, Instant::now())
+        {
+            Err(error) => {
+                self.send_reliable_control_message(session, routes::RESUME_ERROR, &error)
+                    .await
+            }
+            Ok((reply, previous, snapshot_needed)) => {
+                let id = reply.player_id;
+                if let Some(old) = previous {
+                    // Remove only transport state. The registry already belongs to the new owner.
+                    self.retire_session(old, false);
+                    self.send_control_message(
+                        old,
+                        routes::DISCONNECT,
+                        &Disconnect {
+                            reason: DisconnectReason::ClientRequested,
+                            message: "Transport replaced".into(),
+                        },
+                    )
+                    .await?;
+                }
+                self.send_reliable_control_message(session, routes::RESUME_ACCEPTED, &reply)
+                    .await?;
+                if !existed && self.guests.len() > created_before {
+                    let _ = self.event_tx.send(GameEvent::GuestCreated(id));
+                }
+                if snapshot_needed {
+                    let _ = self.event_tx.send(GameEvent::SnapshotRequired {
+                        player_id: id,
+                        session_id: session,
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+
+    async fn handle_snapshot_applied(
+        &mut self,
+        session: SessionId,
+        envelope: Envelope,
+    ) -> Result<(), ServerError> {
+        let applied: SnapshotApplied = match self.control_codec.decode(&envelope.payload) {
+            Ok(applied) => applied,
+            Err(_) => return Ok(()),
+        };
+        if let Some((player_id, newly_ready)) = self.guests.confirm(session, applied.snapshot_id) {
+            self.send_reliable_control_message(session, routes::RESUME_READY, &applied)
+                .await?;
+            if newly_ready {
+                let _ = self.event_tx.send(GameEvent::GuestResumed {
+                    player_id,
+                    session_id: session,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Gracefully disconnects a specific client session
@@ -356,14 +595,7 @@ where
         self.send_control_message(session_id, routes::DISCONNECT, &disconnect)
             .await?;
 
-        // Remove session from HashMap
-        if let Some(session_state) = self.sessions.remove(&session_id) {
-            tracing::debug!(
-                session = %session_id,
-                final_state = ?session_state.state,
-                "Session removed from server"
-            );
-        }
+        self.retire_session(session_id, true);
 
         Ok(())
     }
@@ -570,6 +802,12 @@ where
     /// Handles periodic tasks: timeouts and keepalive for all sessions
     async fn handle_periodic_tasks(&mut self) -> Result<(), ServerError> {
         let now = Instant::now();
+        self.retired_transports.retain(|_, until| now < *until);
+        self.guests.maintenance(now);
+        for id in self.guests.expired(now) {
+            self.guests.remove(id, ResumeError::Expired, now);
+            let _ = self.event_tx.send(GameEvent::GuestEnded(id));
+        }
         let mut sessions_to_remove: Vec<(SessionId, String)> = Vec::new();
         let mut sessions_to_ping = Vec::new();
 
@@ -630,12 +868,7 @@ where
                 );
             }
 
-            if self.sessions.remove(&session_id).is_some() {
-                tracing::info!(session = %session_id, "Session removed due to timeout");
-                let _ = self
-                    .event_tx
-                    .send(GameEvent::PlayerDisconnected(session_id));
-            }
+            self.retire_session(session_id, false);
         }
 
         Ok(())
@@ -672,9 +905,16 @@ where
         // Get or create session state for this client
         // New clients start in Connecting state
         if !self.sessions.contains_key(&session_id) {
+            if self
+                .retired_transports
+                .get(&session_id)
+                .is_some_and(|until| Instant::now() < *until)
+            {
+                return Ok(());
+            }
             // A late transport-level teardown notification must not recreate a
             // session that the server has already removed.
-            if envelope.route_id == routes::DISCONNECT {
+            if envelope.route_id != routes::HELLO {
                 tracing::debug!(
                     session = %session_id,
                     "Ignoring DISCONNECT for unknown session"
@@ -682,7 +922,18 @@ where
                 return Ok(());
             }
 
-            if self.sessions.len() >= self.config.max_concurrent_sessions {
+            let at_capacity = if let Some(cfg) = &self.config.guest_resume {
+                self.sessions
+                    .keys()
+                    .filter(|id| !self.guests.ready(**id))
+                    .count()
+                    >= cfg
+                        .max_pending
+                        .unwrap_or(self.config.max_concurrent_sessions)
+            } else {
+                self.sessions.len() >= self.config.max_concurrent_sessions
+            };
+            if at_capacity {
                 self.reject_session_at_capacity(session_id, envelope.route_id)
                     .await?;
                 return Ok(());
@@ -693,6 +944,14 @@ where
                 session_id,
                 SessionState::new(self.default_game_codec, self.config.rate_limit_burst),
             );
+        }
+
+        if let Some(state) = self.sessions.get_mut(&session_id) {
+            state.protected_udp |= session_envelope.protected_udp;
+            if state.ordinal == 0 {
+                self.next_ordinal += 1;
+                state.ordinal = self.next_ordinal;
+            }
         }
 
         // Update last_received timestamp for this session
@@ -784,6 +1043,8 @@ where
     ) -> Result<(), ServerError> {
         match envelope.route_id {
             routes::HELLO => self.handle_hello(session_id, envelope).await,
+            routes::RESUME_REQUEST => self.handle_resume_request(session_id, envelope).await,
+            routes::SNAPSHOT_APPLIED => self.handle_snapshot_applied(session_id, envelope).await,
             routes::AUTH_REQUEST => self.handle_auth_request(session_id, envelope).await,
             routes::DISCONNECT => self.handle_disconnect(session_id, envelope).await,
             routes::PING => self.handle_ping(session_id, envelope).await,
@@ -825,6 +1086,14 @@ where
         session_id: SessionId,
         envelope: Envelope,
     ) -> Result<(), ServerError> {
+        if self
+            .sessions
+            .get(&session_id)
+            .is_some_and(|s| s.guest_resume)
+            && !self.guests.ready(session_id)
+        {
+            return Ok(());
+        }
         // With a reliability link present, the link already deduped/ordered — skip
         // the security replay window (its retransmits are legitimate duplicates).
         if self.config.reliability.is_some() {
@@ -874,7 +1143,7 @@ where
                 .outgoing_tx
                 .send(SessionEnvelope::new(session_id, disconnect_envelope))
                 .await;
-            self.sessions.remove(&session_id);
+            self.retire_session(session_id, true);
             return Ok(());
         }
 
@@ -918,7 +1187,7 @@ where
                     .outgoing_tx
                     .send(SessionEnvelope::new(session_id, disconnect_envelope))
                     .await;
-                self.sessions.remove(&session_id);
+                self.retire_session(session_id, true);
                 return Ok(());
             }
 
@@ -959,7 +1228,7 @@ where
                 .outgoing_tx
                 .send(SessionEnvelope::new(session_id, disconnect_envelope))
                 .await;
-            self.sessions.remove(&session_id);
+            self.retire_session(session_id, true);
             return Ok(());
         }
 
@@ -1025,7 +1294,7 @@ where
                 .outgoing_tx
                 .send(SessionEnvelope::new(session_id, disconnect_envelope))
                 .await;
-            self.sessions.remove(&session_id);
+            self.retire_session(session_id, true);
 
             return Ok(());
         }
@@ -1092,6 +1361,34 @@ where
             "HELLO received from client"
         );
 
+        if hello.guest_resume
+            && (!self
+                .config
+                .guest_resume
+                .as_ref()
+                .is_some_and(|cfg| cfg.valid())
+                || self.config.auth_required)
+        {
+            self.send_reliable_control_message(
+                session_id,
+                routes::RESUME_ERROR,
+                &ResumeError::Unsupported,
+            )
+            .await?;
+            return Ok(());
+        }
+        if !hello.guest_resume
+            && self.config.guest_resume.is_some()
+            && self.guests.len() + self.sessions.values().filter(|s| !s.guest_resume).count()
+                > self.config.max_concurrent_sessions
+        {
+            self.reject_session_at_capacity(session_id, routes::HELLO)
+                .await?;
+            self.retire_session(session_id, true);
+            return Ok(());
+        }
+        self.sessions.get_mut(&session_id).unwrap().guest_resume = hello.guest_resume;
+
         // Both ends must agree on the reliability layer — reject on mismatch.
         let server_reliability = self.config.reliability.is_some();
         if hello.reliability != server_reliability {
@@ -1111,7 +1408,7 @@ where
             };
             self.send_control_message(session_id, routes::HELLO_ERROR, &hello_error)
                 .await?;
-            self.sessions.remove(&session_id);
+            self.retire_session(session_id, true);
             return Ok(());
         }
 
@@ -1209,7 +1506,9 @@ where
                 tracing::info!(session = %session_id, "Connection established");
 
                 // Notify application of new player connection
-                let _ = self.event_tx.send(GameEvent::PlayerConnected(session_id));
+                if !hello.guest_resume {
+                    let _ = self.event_tx.send(GameEvent::PlayerConnected(session_id));
+                }
             }
             Err(err) => {
                 tracing::error!(session = %session_id, error = %err, "Version mismatch");
@@ -1337,7 +1636,7 @@ where
                         .await?;
 
                         // Transition back to Closed (reject connection) and remove session
-                        self.sessions.remove(&session_id);
+                        self.retire_session(session_id, true);
                         tracing::info!(session = %session_id, "Session removed after auth failure");
                     }
                 }
@@ -1355,7 +1654,7 @@ where
                     .await?;
 
                 // Remove session after auth error
-                self.sessions.remove(&session_id);
+                self.retire_session(session_id, true);
                 tracing::info!(session = %session_id, "Session removed after auth error");
             }
         }
@@ -1380,19 +1679,7 @@ where
             "DISCONNECT received from client"
         );
 
-        // Remove session from HashMap
-        if let Some(session_state) = self.sessions.remove(&session_id) {
-            tracing::debug!(
-                session = %session_id,
-                final_state = ?session_state.state,
-                "Session removed after client disconnect"
-            );
-
-            // Notify application of player disconnection
-            let _ = self
-                .event_tx
-                .send(GameEvent::PlayerDisconnected(session_id));
-        }
+        self.retire_session(session_id, disconnect.reason != DisconnectReason::Timeout);
 
         Ok(())
     }
@@ -1553,6 +1840,14 @@ where
         mode: ReliabilityMode,
         ttl: Duration,
     ) -> Result<(), ServerError> {
+        if self
+            .sessions
+            .get(&session_id)
+            .is_some_and(|s| s.guest_resume)
+            && !self.guests.ready(session_id)
+        {
+            return Ok(());
+        }
         let _ = ttl; // TTL is applied by the reliability link (per-mode default).
 
         // Get session state for codec and sequencing
@@ -1799,6 +2094,7 @@ mod tests {
         use mokosh_protocol::CURRENT_PROTOCOL_VERSION;
 
         let hello = Hello {
+            guest_resume: false,
             protocol_version: CURRENT_PROTOCOL_VERSION,
             min_protocol_version: 1,
             codec_id: 1,
@@ -1824,6 +2120,7 @@ mod tests {
         use mokosh_protocol::CURRENT_PROTOCOL_VERSION;
 
         let hello = Hello {
+            guest_resume: false,
             protocol_version: CURRENT_PROTOCOL_VERSION,
             min_protocol_version: 1,
             codec_id: 1, // JSON
@@ -2405,3 +2702,6 @@ mod tests {
     // `ReliableServerLink` decorator (below the loop); it is covered by that
     // module's tests (`transport::reliable::tests`).
 }
+
+#[cfg(test)]
+mod resume_tests;

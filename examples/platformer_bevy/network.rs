@@ -77,6 +77,7 @@ async fn connect_to_server(
 
     // Send HELLO message
     let hello = Hello {
+        guest_resume: false,
         protocol_version: CURRENT_PROTOCOL_VERSION,
         min_protocol_version: CURRENT_PROTOCOL_VERSION,
         codec_id: 1, // JSON
